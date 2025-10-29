@@ -1,0 +1,32 @@
+{
+  "name": "rtmp-bun-server",
+  "version": "1.0.0",
+  "description": "Backend RTMP server for forwarding streams to other services",
+  "main": "src/main.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "build": "bun build src/main.ts --outdir dist --target bun",
+    "test": "bun test",
+    "test:api": "bun run test/api-test.ts",
+    "verify": "bun run verify.ts",
+    "demo": "bun run demo.ts",
+    "logs": "tail -f logs/rtmp.log"
+  },
+  "keywords": [
+    "rtmp",
+    "streaming",
+    "server",
+    "bun"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "^1.3.1",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
