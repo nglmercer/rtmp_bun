@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="es">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>🚀 Universal Stream Player - Multi-Library Fallback</title>
+        <style>
+            body {
+                font-family:
+                    "Segoe UI",
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+                margin: 0;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+            }
+            .container {
+                max-width: 1000px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 20px;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                overflow: hidden;
+            }
+            header {
+                background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+                color: white;
+                padding: 30px;
+                text-align: center;
+            }
+            header h1 {
+                margin: 0 0 10px 0;
+                font-size: 2.5em;
+                font-weight: 700;
+            }
+            header p {
+                margin: 0;
+                opacity: 0.9;
+                font-size: 1.1em;
+            }
+            main {
+                padding: 30px;
+            }
+            .video-container {
+                width: 100%;
+                max-width: 800px;
+                margin: 0 auto 30px;
+                background: #000;
+                border-radius: 15px;
+                overflow: hidden;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                aspect-ratio: 16/9;
+                position: relative;
+            }
+            video {
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+            }
+            .method-indicator {
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                background: rgba(0, 0, 0, 0.7);
+                color: white;
+                padding: 5px 10px;
+                border-radius: 5px;
+                font-size: 12px;
+                font-weight: 600;
+                z-index: 10;
+            }
+            .controls {
+                margin: 30px 0;
+                text-align: center;
+            }
+            .control-group {
+                display: flex;
+                gap: 10px;
+                justify-content: center;
+                flex-wrap: wrap;
+                margin-bottom: 20px;
+            }
+            button {
+                margin: 5px;
+                padding: 12px 24px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                cursor: pointer;
+                font-weight: 600;
+                font-size: 14px;
+                transition: all 0.3s ease;
+                box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+            }
+            button:hover:not(:disabled) {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+            }
+            button:disabled {
+                background: #e0e0e0;
+                cursor: not-allowed;
+                box-shadow: none;
+                transform: none;
+            }
+            button.danger {
+                background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+                box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);
+            }
+            button.success {
+                background: linear-gradient(135deg, #00d2d3 0%, #01a3a4 100%);
+                box-shadow: 0 4px 15px rgba(0, 210, 211, 0.3);
+            }
+            .stream-input-group {
+                display: flex;
+                gap: 10px;
+                justify-content: center;
+                align-items: center;
+                margin: 20px 0;
+            }
+            .stream-input-group label {
+                font-weight: 600;
+                color: #333;
+            }
+            .stream-input-group input {
+                padding: 10px 15px;
+                border: 2px solid #e0e0e0;
+                border-radius: 8px;
+                font-size: 14px;
+                width: 200px;
+                transition: border-color 0.3s ease;
+            }
+            .stream-input-group input:focus {
+                outline: none;
+                border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            }
+            .status {
+                margin: 20px 0;
+                padding: 15px;
+                border-radius: 10px;
+                font-weight: 600;
+                transition: all 0.3s ease;
+            }
+            .status.connected {
+                background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
+                color: #0c5460;
+            }
+            .status.connecting {
+                background: linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%);
+                color: #856404;
+            }
+            .status.error {
+                background: linear-gradient(135deg, #ff7675 0%, #fd79a8 100%);
+                color: #721c24;
+            }
+            .status.disconnected {
+                background: #f8f9fa;
+                color: #6c757d;
+            }
+            .stats {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                margin: 20px 0;
+            }
+            .stat-card {
+                background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+                padding: 15px;
+                border-radius: 10px;
+                border-left: 4px solid #667eea;
+            }
+            .stat-card h4 {
+                margin: 0 0 5px 0;
+                color: #495057;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            .stat-card .value {
+                font-size: 24px;
+                font-weight: 700;
+                color: #667eea;
+            }
+            .logs {
+                margin: 20px 0;
+                padding: 20px;
+                background: #1a202c;
+                color: #e2e8f0;
+                font-family: "Fira Code", "Courier New", monospace;
+                font-size: 13px;
+                max-height: 400px;
+                overflow-y: auto;
+                border-radius: 10px;
+                box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.3);
+            }
+            .logs div {
+                padding: 3px 0;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+                animation: fadeIn 0.3s ease;
+            }
+            @keyframes fadeIn {
+                from {
+                    opacity: 0;
+                    transform: translateY(5px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+            .codec-badges {
+                display: flex;
+                gap: 8px;
+                flex-wrap: wrap;
+                margin: 15px 0;
+                justify-content: center;
+            }
+            .codec-badge {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 600;
+                text-transform: uppercase;
+            }
+            .fallback-indicator {
+                text-align: center;
+                padding: 10px;
+                background: rgba(255, 193, 7, 0.1);
+                border-radius: 8px;
+                margin: 10px 0;
+                font-weight: 600;
+                color: #856404;
+                display: none;
+            }
+            .fallback-indicator.active {
+                display: block;
+                animation: pulse 1s infinite;
+            }
+            @keyframes pulse {
+                0%,
+                100% {
+                    opacity: 1;
+                }
+                50% {
+                    opacity: 0.7;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🚀 Universal Stream Player</h1>
+            <p>
+                Sistema de streaming con fallback automático entre múltiples
+                librerías para máxima compatibilidad
+            </p>
+
+            <div class="video-container">
+                <div class="method-indicator" id="methodIndicator">
+                    🔄 Esperando...
+                </div>
+                <video id="videoPlayer" controls muted playsinline></video>
+            </div>
+
+            <div class="controls">
+                <div class="control-group">
+                    <button id="connectBtn" onclick="connect()">
+                        🚀 Conectar
+                    </button>
+                    <button
+                        id="disconnectBtn"
+                        onclick="disconnect()"
+                        class="danger"
+                        disabled
+                    >
+                        🔌 Desconectar
+                    </button>
+                    <button
+                        id="testBtn"
+                        onclick="sendTestChunk()"
+                        class="success"
+                    >
+                        🧪 Test Stream
+                    </button>
+                    <button id="clearBtn" onclick="clearLogs()">
+                        🗑️ Limpiar Logs
+                    </button>
+                    <button id="useTestBtn" onclick="useTestStream()">
+                        📺 Test Key
+                    </button>
+                </div>
+
+                <div class="stream-input-group">
+                    <label for="streamKeyInput">🔑 Stream Key:</label>
+                    <input
+                        type="text"
+                        id="streamKeyInput"
+                        value="test"
+                        placeholder="Ingrese stream key"
+                    />
+                    <button onclick="setStreamKey()" class="success">
+                        ✅ Aplicar
+                    </button>
+                </div>
+
+                <div class="fallback-indicator" id="fallbackIndicator">
+                    ⚠️ Cambiando al siguiente método de streaming...
+                </div>
+            </div>
+            <div class="controls">
+                <label for="streamKeyInput">Stream Key:</label>
+                <input
+                    type="text"
+                    id="streamKeyInput"
+                    value="test"
+                    style="width: 150px; padding: 5px; margin-right: 10px"
+                />
+                <button id="setStreamKeyBtn" onclick="setStreamKey()">
+                    Set Stream Key
+                </button>
+            </div>
+
+            <div id="status" class="status disconnected">
+                <span id="statusText">🔌 Desconectado</span>
+            </div>
+
+            <div class="codec-badges" id="codecBadges">
+                <div class="codec-badge">🔄 Detectando codecs...</div>
+            </div>
+
+            <div class="stats">
+                <div class="stat-card">
+                    <h4>📦 Chunks Recibidos</h4>
+                    <div class="value" id="chunksReceived">0</div>
+                </div>
+                <div class="stat-card">
+                    <h4>⚙️ Chunks Procesados</h4>
+                    <div class="value" id="chunksProcessed">0</div>
+                </div>
+                <div class="stat-card">
+                    <h4>📊 En Cola</h4>
+                    <div class="value" id="queueSize">0</div>
+                </div>
+                <div class="stat-card">
+                    <h4>📈 Estado del Buffer</h4>
+                    <div class="value" id="bufferInfo" style="font-size: 14px">
+                        -
+                    </div>
+                </div>
+            </div>
+
+            <div id="logs" class="logs">
+                <div>🚀 Universal Stream Player inicializado...</div>
+            </div>
+        </div>
+
+        <!-- Streaming Libraries -->
+        <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.3.3/dist/shaka-player.ui.js"></script>
+        <script src="./main.js"></script>
+    </body>
+</html>
