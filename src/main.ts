@@ -12,17 +12,25 @@ async function main() {
     `📋 Configuration loaded. RTMP Port: ${config.server.port}, API Port: ${config.server.restApiPort}`,
   );
 
+  console.log("🔧 Initializing RTMP Server...");
   // Initialize RTMP Server (constructor starts the server automatically)
   new RTMPServer(config.server.port);
+  console.log("✅ RTMP Server initialized");
 
+  console.log("🔧 Initializing Stream Forwarder...");
   // Initialize stream forwarder
   const forwarder = new StreamForwarder(config);
+  console.log("✅ Stream Forwarder initialized");
 
+  console.log("🔧 Initializing REST API...");
   // Initialize REST API
   const api = new RestApi(config, forwarder);
+  console.log("✅ REST API initialized");
 
+  console.log("🌐 Starting API server...");
   // Start the API server
   await api.start();
+  console.log("✅ API server started");
 
   // Graceful shutdown
   const shutdown = async () => {
@@ -53,5 +61,6 @@ async function main() {
 
 main().catch((error) => {
   console.error("❌ Failed to start server:", error);
+  console.error("Stack trace:", error?.stack);
   process.exit(1);
 });

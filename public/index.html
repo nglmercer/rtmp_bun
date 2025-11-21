@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>RTMP Bun Server - HLS Streaming</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+        .btn-primary { background-color: #007bff; color: white; }
+        .btn-danger { background-color: #dc3545; color: white; }
+        .btn-info { background-color: #17a2b8; color: white; }
+        button:hover { opacity: 0.8; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .video-container {
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        video {
+            width: 100%;
+            max-width: 800px;
+            height: auto;
+            display: block;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-online { background-color: #28a745; }
+        .status-offline { background-color: #dc3545; }
+        .status-warning { background-color: #ffc107; }
+        #logs {
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 768px) {
+            .grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <h1>🎬 RTMP Bun Server - HLS Streaming</h1>
+    
+    <div class="container">
+        <h3>📹 Stream Configuration</h3>
+        <div class="controls">
+            <input type="text" id="streamKey" placeholder="Stream Key (ej: test123)" value="test123" style="padding: 10px; border: 1px solid #ccc; border-radius: 4px;">
+            <button class="btn-primary" onclick="startHls()">Start HLS</button>
+            <button class="btn-danger" onclick="stopHls()">Stop HLS</button>
+            <button class="btn-info" onclick="checkStatus()">Check Status</button>
+        </div>
+        
+        <div>
+            <strong>RTMP URL:</strong> <code>rtmp://localhost:1935/live/<span id="rtmpKeyDisplay">test123</span></code><br>
+            <strong>HLS URL:</strong> <code>http://localhost:3000/hls/playlist.m3u8</code>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="container">
+            <h3>🎥 Video Player</h3>
+            <div class="video-container">
+                <video id="video" controls muted></video>
+            </div>
+            <div id="playerStatus" style="margin-top: 10px;">
+                <span class="status-indicator status-offline"></span>
+                <span>Player Offline</span>
+            </div>
+        </div>
+
+        <div class="container">
+            <h3>📊 Stream Status</h3>
+            <div id="statusContainer">
+                <div><span class="status-indicator status-offline"></span> <strong>HLS:</strong> <span id="hlsStatus">Offline</span></div>
+                <div><strong>Stream Key:</strong> <span id="currentStreamKey">None</span></div>
+                <div><strong>Segments:</strong> <span id="segmentCount">0</span></div>
+                <div><strong>Media Sequence:</strong> <span id="mediaSequence">0</span></div>
+            </div>
+            <pre id="status" style="background: #f8f9fa; padding: 10px; border-radius: 4px; font-size: 12px; max-height: 200px; overflow-y: auto;">Loading...</pre>
+        </div>
+    </div>
+
+    <div class="container">
+        <h3>📝 Logs</h3>
+        <div id="logs"></div>
+        <button onclick="clearLogs()" style="margin-top: 10px;" class="btn-info">Clear Logs</button>
+    </div>
+
+    <script>
+        let hls = null;
+        let statusInterval = null;
+
+        function log(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const entry = document.createElement('div');
+            const timestamp = new Date().toLocaleTimeString();
+            entry.style.color = type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : '#333';
+            entry.textContent = `[${timestamp}] ${message}`;
+            logs.appendChild(entry);
+            logs.scrollTop = logs.scrollHeight;
+            console.log(message);
+        }
+
+        function clearLogs() {
+            document.getElementById('logs').innerHTML = '';
+        }
+
+        function updatePlayerStatus(status, message) {
+            const container = document.getElementById('playerStatus');
+            const indicator = container.querySelector('.status-indicator');
+            const text = container.querySelector('span:last-child');
+            
+            indicator.className = `status-indicator status-${status}`;
+            text.textContent = message;
+        }
+
+        async function startHls() {
+            try {
+                const streamKey = document.getElementById('streamKey').value || 'default';
+                document.getElementById('rtmpKeyDisplay').textContent = streamKey;
+                
+                log(`Starting HLS conversion for stream: ${streamKey}`, 'info');
+                const response = await fetch('/api/hls/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ streamKey })
+                });
+                
+                const result = await response.json();
+                if (response.ok) {
+                    log(`HLS started successfully: ${result.message}`, 'success');
+                    setTimeout(() => loadVideo(), 3000);
+                } else {
+                    log(`Error starting HLS: ${result.message}`, 'error');
+                }
+            } catch (error) {
+                log(`Error starting HLS: ${error.message}`, 'error');
+            }
+        }
+
+        async function stopHls() {
+            try {
+                log('Stopping HLS conversion...', 'info');
+                const response = await fetch('/api/hls/stop', { method: 'POST' });
+                const result = await response.json();
+                
+                if (response.ok) {
+                    log(`HLS stopped: ${result.message}`, 'success');
+                    if (hls) {
+                        hls.destroy();
+                        hls = null;
+                    }
+                    document.getElementById('video').src = '';
+                    updatePlayerStatus('offline', 'Player Offline');
+                } else {
+                    log(`Error stopping HLS: ${result.message}`, 'error');
+                }
+            } catch (error) {
+                log(`Error stopping HLS: ${error.message}`, 'error');
+            }
+        }
+
+        function loadVideo() {
+            const video = document.getElementById('video');
+            const streamUrl = 'http://localhost:3000/hls/playlist.m3u8';
+            
+            log(`Loading video from: ${streamUrl}`, 'info');
+            
+            if (hls) {
+                hls.destroy();
+            }
+
+            if (Hls.isSupported()) {
+                hls = new Hls({
+                    debug: false,
+                    enableWorker: true,
+                    lowLatencyMode: true,
+                    backBufferLength: 90
+                });
+                
+                hls.loadSource(streamUrl);
+                hls.attachMedia(video);
+
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    log('HLS manifest parsed successfully', 'success');
+                    updatePlayerStatus('online', 'Player Ready');
+                    video.play().catch(e => log(`Play error: ${e}`, 'error'));
+                });
+
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    log(`HLS Error: ${data.details} - Fatal: ${data.fatal}`, 'error');
+                    if (data.fatal) {
+                        updatePlayerStatus('warning', 'Player Error');
+                    }
+                });
+
+                hls.on(Hls.Events.FRAG_LOADED, () => {
+                    log('Fragment loaded', 'info');
+                });
+
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = streamUrl;
+                video.addEventListener('loadedmetadata', () => {
+                    log('Native HLS loaded (Safari)', 'success');
+                    updatePlayerStatus('online', 'Player Ready');
+                    video.play();
+                });
+            } else {
+                log('HLS not supported in this browser', 'error');
+                updatePlayerStatus('offline', 'HLS Not Supported');
+            }
+        }
+
+        async function checkStatus() {
+            try {
+                const response = await fetch('/api/hls/status');
+                const status = await response.json();
+                
+                // Update UI elements
+                document.getElementById('status').textContent = JSON.stringify(status, null, 2);
+                
+                if (status.success) {
+                    const hlsStatus = document.getElementById('hlsStatus');
+                    const hlsIndicator = document.querySelector('#statusContainer .status-indicator');
+                    const streamKeyElement = document.getElementById('currentStreamKey');
+                    const segmentCountElement = document.getElementById('segmentCount');
+                    const mediaSequenceElement = document.getElementById('mediaSequence');
+                    
+                    if (status.data.isRunning) {
+                        hlsStatus.textContent = 'Online';
+                        hlsIndicator.className = 'status-indicator status-online';
+                        streamKeyElement.textContent = status.data.streamKey || 'Unknown';
+                        segmentCountElement.textContent = status.data.stats?.segments || 0;
+                        mediaSequenceElement.textContent = status.data.stats?.mediaSequence || 0;
+                    } else {
+                        hlsStatus.textContent = 'Offline';
+                        hlsIndicator.className = 'status-indicator status-offline';
+                        streamKeyElement.textContent = 'None';
+                        segmentCountElement.textContent = '0';
+                        mediaSequenceElement.textContent = '0';
+                    }
+                }
+            } catch (error) {
+                log(`Error checking status: ${error.message}`, 'error');
+            }
+        }
+
+        // Update stream key display when input changes
+        document.getElementById('streamKey').addEventListener('input', (e) => {
+            document.getElementById('rtmpKeyDisplay').textContent = e.target.value || 'default';
+        });
+
+        // Auto-check status every 3 seconds
+        statusInterval = setInterval(checkStatus, 3000);
+        
+        // Initial status check
+        checkStatus();
+        log('HLS Debug page loaded. Ready to start streaming!', 'success');
+    </script>
+</body>
+</html>

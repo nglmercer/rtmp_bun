@@ -34,8 +34,9 @@ const LOG_FILE = `./logs/rtmp.log`;
 // Reconnection settings
 const RECONNECTION_TIMEOUT = 30000; // 30 seconds to reconnect
 const CLEANUP_INTERVAL = 60000; // Check for expired streams every minute
-
+let debuglog = false;
 function writeLog(message: string) {
+  if (!debuglog) return;
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] ${message}\n`;
   console.log(message);
