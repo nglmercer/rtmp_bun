@@ -96,8 +96,18 @@ export async function createRouter(): Promise<Router> {
     getHlsStatus
   } = await import("../handlers/hls.js");
 
+  const {
+    serveMemoryPlaylist,
+    serveMemorySegment,
+    startMemoryHls,
+    stopMemoryHls,
+    getMemoryHlsStatus,
+    setBitrate
+  } = await import("../handlers/hls-memory.js");
+
   // Rutas de salud y estado
   router.add("GET", "/", rootHandler);
+  router.add("GET", "/index.html", rootHandler);
   router.add("GET", "/health", healthHandler);
 
   // Rutas de configuración
@@ -120,14 +130,24 @@ export async function createRouter(): Promise<Router> {
   router.add("DELETE", "/hls_ingest/*", hlsDeleteHandler);
   router.add("GET", "/hls_ingest/*", hlsServeHandler);
 
-  // Rutas HLS nuevas (usando ffmpeg-lib)
-  router.add("GET", "/hls/playlist.m3u8", servePlaylist);
-  router.add("GET", "/hls/segment-:sequence.ts", serveSegment);
+  // Rutas HLS nuevas (usando ffmpeg-lib) - DESHABILITADAS para evitar duplicación
+  // router.add("GET", "/hls/playlist.m3u8", servePlaylist);
+  // router.add("GET", "/hls/segment-:sequence.ts", serveSegment);
 
-  // Rutas de control HLS (API REST)
-  router.add("POST", "/api/hls/start", startHls);
-  router.add("POST", "/api/hls/stop", stopHls);
-  router.add("GET", "/api/hls/status", getHlsStatus);
+  // Rutas de control HLS (API REST) - DESHABILITADAS para evitar duplicación
+  // router.add("POST", "/api/hls/start", startHls);
+  // router.add("POST", "/api/hls/stop", stopHls);
+  // router.add("GET", "/api/hls/status", getHlsStatus);
+
+  // Rutas HLS en memoria
+  router.add("GET", "/hls-memory/playlist.m3u8", serveMemoryPlaylist);
+  router.add("GET", "/hls-memory/segment-:sequence.ts", serveMemorySegment);
+
+  // Rutas de control HLS en memoria (API REST)
+  router.add("POST", "/api/hls-memory/start", startMemoryHls);
+  router.add("POST", "/api/hls-memory/stop", stopMemoryHls);
+  router.add("GET", "/api/hls-memory/status", getMemoryHlsStatus);
+  router.add("POST", "/api/hls-memory/bitrate", setBitrate);
   
   // Mantener las rutas antiguas por compatibilidad
   router.add("POST", "/api/hls/start-legacy", startHlsHandler);

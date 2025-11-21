@@ -1,303 +1,145 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>RTMP Bun Server - HLS Streaming</title>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <title>Test Player HLS</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }
-        .container {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
-        .controls {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
-        button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background-color 0.3s;
-        }
-        .btn-primary { background-color: #007bff; color: white; }
-        .btn-danger { background-color: #dc3545; color: white; }
-        .btn-info { background-color: #17a2b8; color: white; }
-        button:hover { opacity: 0.8; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .video-container {
-            position: relative;
-            background: #000;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        video {
-            width: 100%;
-            max-width: 800px;
-            height: auto;
-            display: block;
-        }
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 8px;
-        }
-        .status-online { background-color: #28a745; }
-        .status-offline { background-color: #dc3545; }
-        .status-warning { background-color: #ffc107; }
-        #logs {
-            height: 200px;
-            overflow-y: auto;
-            border: 1px solid #ccc;
-            padding: 10px;
-            font-family: monospace;
-            font-size: 12px;
-            background-color: #f8f9fa;
-            border-radius: 4px;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-        @media (max-width: 768px) {
-            .grid { grid-template-columns: 1fr; }
-        }
+        body { background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        video { width: 80%; max-width: 1000px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 <body>
-    <h1>🎬 RTMP Bun Server - HLS Streaming</h1>
-    
-    <div class="container">
-        <h3>📹 Stream Configuration</h3>
-        <div class="controls">
-            <input type="text" id="streamKey" placeholder="Stream Key (ej: test123)" value="test123" style="padding: 10px; border: 1px solid #ccc; border-radius: 4px;">
-            <button class="btn-primary" onclick="startHls()">Start HLS</button>
-            <button class="btn-danger" onclick="stopHls()">Stop HLS</button>
-            <button class="btn-info" onclick="checkStatus()">Check Status</button>
-        </div>
-        
-        <div>
-            <strong>RTMP URL:</strong> <code>rtmp://localhost:1935/live/<span id="rtmpKeyDisplay">test123</span></code><br>
-            <strong>HLS URL:</strong> <code>http://localhost:3000/hls/playlist.m3u8</code>
-        </div>
-    </div>
 
-    <div class="grid">
-        <div class="container">
-            <h3>🎥 Video Player</h3>
-            <div class="video-container">
-                <video id="video" controls muted></video>
-            </div>
-            <div id="playerStatus" style="margin-top: 10px;">
-                <span class="status-indicator status-offline"></span>
-                <span>Player Offline</span>
-            </div>
-        </div>
-
-        <div class="container">
-            <h3>📊 Stream Status</h3>
-            <div id="statusContainer">
-                <div><span class="status-indicator status-offline"></span> <strong>HLS:</strong> <span id="hlsStatus">Offline</span></div>
-                <div><strong>Stream Key:</strong> <span id="currentStreamKey">None</span></div>
-                <div><strong>Segments:</strong> <span id="segmentCount">0</span></div>
-                <div><strong>Media Sequence:</strong> <span id="mediaSequence">0</span></div>
-            </div>
-            <pre id="status" style="background: #f8f9fa; padding: 10px; border-radius: 4px; font-size: 12px; max-height: 200px; overflow-y: auto;">Loading...</pre>
-        </div>
-    </div>
-
-    <div class="container">
-        <h3>📝 Logs</h3>
-        <div id="logs"></div>
-        <button onclick="clearLogs()" style="margin-top: 10px;" class="btn-info">Clear Logs</button>
-    </div>
+    <video id="video" controls autoplay muted></video>
 
     <script>
-        let hls = null;
-        let statusInterval = null;
-
-        function log(message, type = 'info') {
-            const logs = document.getElementById('logs');
-            const entry = document.createElement('div');
-            const timestamp = new Date().toLocaleTimeString();
-            entry.style.color = type === 'error' ? '#dc3545' : type === 'success' ? '#28a745' : '#333';
-            entry.textContent = `[${timestamp}] ${message}`;
-            logs.appendChild(entry);
-            logs.scrollTop = logs.scrollHeight;
-            console.log(message);
-        }
-
-        function clearLogs() {
-            document.getElementById('logs').innerHTML = '';
-        }
-
-        function updatePlayerStatus(status, message) {
-            const container = document.getElementById('playerStatus');
-            const indicator = container.querySelector('.status-indicator');
-            const text = container.querySelector('span:last-child');
-            
-            indicator.className = `status-indicator status-${status}`;
-            text.textContent = message;
-        }
-
-        async function startHls() {
-            try {
-                const streamKey = document.getElementById('streamKey').value || 'default';
-                document.getElementById('rtmpKeyDisplay').textContent = streamKey;
-                
-                log(`Starting HLS conversion for stream: ${streamKey}`, 'info');
-                const response = await fetch('/api/hls/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ streamKey })
-                });
-                
-                const result = await response.json();
-                if (response.ok) {
-                    log(`HLS started successfully: ${result.message}`, 'success');
-                    setTimeout(() => loadVideo(), 3000);
-                } else {
-                    log(`Error starting HLS: ${result.message}`, 'error');
-                }
-            } catch (error) {
-                log(`Error starting HLS: ${error.message}`, 'error');
-            }
-        }
-
-        async function stopHls() {
-            try {
-                log('Stopping HLS conversion...', 'info');
-                const response = await fetch('/api/hls/stop', { method: 'POST' });
-                const result = await response.json();
-                
-                if (response.ok) {
-                    log(`HLS stopped: ${result.message}`, 'success');
-                    if (hls) {
-                        hls.destroy();
-                        hls = null;
-                    }
-                    document.getElementById('video').src = '';
-                    updatePlayerStatus('offline', 'Player Offline');
-                } else {
-                    log(`Error stopping HLS: ${result.message}`, 'error');
-                }
-            } catch (error) {
-                log(`Error stopping HLS: ${error.message}`, 'error');
-            }
-        }
-
-        function loadVideo() {
-            const video = document.getElementById('video');
-            const streamUrl = 'http://localhost:3000/hls/playlist.m3u8';
-            
-            log(`Loading video from: ${streamUrl}`, 'info');
-            
-            if (hls) {
-                hls.destroy();
-            }
-
-            if (Hls.isSupported()) {
-                hls = new Hls({
-                    debug: false,
-                    enableWorker: true,
-                    lowLatencyMode: true,
-                    backBufferLength: 90
-                });
-                
-                hls.loadSource(streamUrl);
-                hls.attachMedia(video);
-
-                hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                    log('HLS manifest parsed successfully', 'success');
-                    updatePlayerStatus('online', 'Player Ready');
-                    video.play().catch(e => log(`Play error: ${e}`, 'error'));
-                });
-
-                hls.on(Hls.Events.ERROR, (event, data) => {
-                    log(`HLS Error: ${data.details} - Fatal: ${data.fatal}`, 'error');
-                    if (data.fatal) {
-                        updatePlayerStatus('warning', 'Player Error');
-                    }
-                });
-
-                hls.on(Hls.Events.FRAG_LOADED, () => {
-                    log('Fragment loaded', 'info');
-                });
-
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                video.src = streamUrl;
-                video.addEventListener('loadedmetadata', () => {
-                    log('Native HLS loaded (Safari)', 'success');
-                    updatePlayerStatus('online', 'Player Ready');
-                    video.play();
-                });
-            } else {
-                log('HLS not supported in this browser', 'error');
-                updatePlayerStatus('offline', 'HLS Not Supported');
-            }
-        }
-
-        async function checkStatus() {
-            try {
-                const response = await fetch('/api/hls/status');
-                const status = await response.json();
-                
-                // Update UI elements
-                document.getElementById('status').textContent = JSON.stringify(status, null, 2);
-                
-                if (status.success) {
-                    const hlsStatus = document.getElementById('hlsStatus');
-                    const hlsIndicator = document.querySelector('#statusContainer .status-indicator');
-                    const streamKeyElement = document.getElementById('currentStreamKey');
-                    const segmentCountElement = document.getElementById('segmentCount');
-                    const mediaSequenceElement = document.getElementById('mediaSequence');
-                    
-                    if (status.data.isRunning) {
-                        hlsStatus.textContent = 'Online';
-                        hlsIndicator.className = 'status-indicator status-online';
-                        streamKeyElement.textContent = status.data.streamKey || 'Unknown';
-                        segmentCountElement.textContent = status.data.stats?.segments || 0;
-                        mediaSequenceElement.textContent = status.data.stats?.mediaSequence || 0;
-                    } else {
-                        hlsStatus.textContent = 'Offline';
-                        hlsIndicator.className = 'status-indicator status-offline';
-                        streamKeyElement.textContent = 'None';
-                        segmentCountElement.textContent = '0';
-                        mediaSequenceElement.textContent = '0';
-                    }
-                }
-            } catch (error) {
-                log(`Error checking status: ${error.message}`, 'error');
-            }
-        }
-
-        // Update stream key display when input changes
-        document.getElementById('streamKey').addEventListener('input', (e) => {
-            document.getElementById('rtmpKeyDisplay').textContent = e.target.value || 'default';
-        });
-
-        // Auto-check status every 3 seconds
-        statusInterval = setInterval(checkStatus, 3000);
+        var video = document.getElementById('video');
         
-        // Initial status check
-        checkStatus();
-        log('HLS Debug page loaded. Ready to start streaming!', 'success');
+        // ---------------------------------------------------------
+        // CAMBIA ESTO POR TU URL LOCAL CUANDO TENGAS EL SERVIDOR:/hls-memory/playlist.m3u8
+        var videoSrc = 'http://localhost:3000/hls-memory/playlist.m3u8';
+        // ---------------------------------------------------------
+        //var videoSrc = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'; // URL de prueba pública
+        const status = fetch('http://localhost:3000/hls/status')
+
+        // 3. Lógica de carga
+        if (Hls.isSupported()) {
+            console.log("HLS.js soportado. Iniciando...");
+            var hls = new Hls({
+                debug: true, // Activa logs en la consola (F12) para ver errores
+            });
+            hls.loadSource(videoSrc);
+            hls.attachMedia(video);
+            console.log("Hls.Events.MANIFEST_PARSED",Hls.Events.MANIFEST_PARSED)
+            hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                video.play();
+            });
+            // Manejo básico de errores
+            hls.on(Hls.Events.ERROR, function (event, data) {
+                console.error("Error HLS:", data);
+            });
+
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Fallback para Safari (Soporte nativo)
+            video.src = videoSrc;
+            video.addEventListener('loadedmetadata', function() {
+                video.play();
+            });
+        }
+
+        // Script para probar la API HLS en memoria
+        const baseURL = 'http://localhost:3000';
+
+        async function testAPI() {
+            console.log('🧪 Iniciando pruebas de API HLS...\n');
+            
+            try {
+                // 1. Verificar estado inicial
+                console.log('1️⃣ Verificando estado inicial...');
+                const statusResponse = await fetch(`${baseURL}/api/hls-memory/status`);
+                const status = await statusResponse.json();
+                console.log('Estado inicial:', JSON.stringify(status, null, 2));
+                
+                // 2. Iniciar HLS (o verificar si ya está corriendo)
+                console.log('\n2️⃣ Iniciando HLS...');
+                try {
+                    // Primero verificar si ya está corriendo
+                    const statusCheck = await fetch(`${baseURL}/api/hls-memory/status`);
+                    const statusData = await statusCheck.json();
+                    
+                    if (statusData.success && statusData.data.isRunning) {
+                        console.log('ℹ️ HLS ya está corriendo, deteniendo primero...');
+                        await fetch(`${baseURL}/api/hls-memory/stop`, { method: 'POST' });
+                        await new Promise(resolve => setTimeout(resolve, 1000)); // Esperar 1 segundo
+                    }
+                    
+                    const startResponse = await fetch(`${baseURL}/api/hls-memory/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ streamKey: 'test123' })
+                    });
+                    
+                    console.log('Response status:', startResponse.status);
+                    const startResult = await startResponse.json();
+                    console.log('Resultado inicio:', JSON.stringify(startResult, null, 2));
+                    
+                    if (!startResponse.ok) {
+                        console.log('⚠️ HLS ya estaba corriendo o no se pudo iniciar:', startResult.message);
+                    }
+                } catch (error) {
+                    console.log('⚠️ Error al iniciar HLS (puede que ya esté corriendo):', error.message);
+                }
+                
+                // 3. Esperar un momento y verificar estado
+                console.log('\n3️⃣ Esperando 3 segundos...');
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+                console.log('4️⃣ Verificando estado después de iniciar...');
+                const statusAfterStart = await fetch(`${baseURL}/api/hls-memory/status`);
+                const status2 = await statusAfterStart.json();
+                console.log('Estado después de iniciar:', JSON.stringify(status2, null, 2));
+                
+                // 5. Intentar cargar playlist
+                console.log('\n5️⃣ Intentando cargar playlist...');
+                const playlistResponse = await fetch(`${baseURL}/hls-memory/playlist.m3u8`);
+                console.log('Playlist response status:', playlistResponse.status);
+                
+                if (playlistResponse.ok) {
+                    const playlistText = await playlistResponse.text();
+                    console.log('Playlist content (primeras líneas):');
+                    console.log(playlistText.split('\n').slice(0, 10).join('\n'));
+                } else {
+                    console.log('Error cargando playlist:', await playlistResponse.text());
+                }
+                
+                // 6. Verificar archivos de debug
+                console.log('\n6️⃣ Verificando archivos en memoria...');
+                const debugResponse = await fetch(`${baseURL}/debug/files`);
+                if (debugResponse.ok) {
+                    const debugFiles = await debugResponse.json();
+                    console.log('Archivos en memoria:', JSON.stringify(debugFiles, null, 2));
+                }
+                
+                // 7. Detener HLS
+                console.log('\n7️⃣ Deteniendo HLS...');
+                const stopResponse = await fetch(`${baseURL}/api/hls-memory/stop`, {
+                    method: 'POST'
+                });
+                const stopResult = await stopResponse.json();
+                console.log('Resultado detener:', JSON.stringify(stopResult, null, 2));
+                
+                console.log('\n✅ Pruebas completadas!');
+                
+            } catch (error) {
+                console.error('\n❌ Error en las pruebas:', error.message);
+                console.error('Stack:', error.stack);
+            }
+        }
+
+        // Ejecutar pruebas
+        testAPI();
+
     </script>
 </body>
 </html>

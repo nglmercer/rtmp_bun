@@ -71,8 +71,7 @@ export const startHls: RouteHandler = async (request, context) => {
     
     await hlsManager.startHls(streamKey);
     
-    return ResponseUtils.success({
-      message: "HLS conversion started",
+    return ResponseUtils.success("HLS conversion started", {
       streamKey,
       playlistUrl: `/hls/playlist.m3u8`
     });
@@ -87,9 +86,7 @@ export const stopHls: RouteHandler = async (request, context) => {
   try {
     await hlsManager.stopHls();
     
-    return ResponseUtils.success({
-      message: "HLS conversion stopped"
-    });
+    return ResponseUtils.success("HLS conversion stopped");
   } catch (error) {
     console.error("Error stopping HLS conversion:", error);
     return ResponseUtils.serverError("Failed to stop HLS conversion");
@@ -104,7 +101,7 @@ export const getHlsStatus: RouteHandler = async (request, context) => {
     const isRunning = hlsManager.isRunning();
     const availableSequences = hlsManager.getAvailableSequences();
     
-    return ResponseUtils.success({
+    return ResponseUtils.success("HLS status retrieved", {
       isRunning,
       streamKey,
       stats,

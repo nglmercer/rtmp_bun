@@ -1,4 +1,5 @@
 import { writeFileSync, appendFileSync } from "node:fs";
+import { hlsMemoryManager } from "./api/hls-memory-manager.js";
 
 interface StreamStats {
   bytesReceived: number;
@@ -34,7 +35,7 @@ const LOG_FILE = `./logs/rtmp.log`;
 // Reconnection settings
 const RECONNECTION_TIMEOUT = 30000; // 30 seconds to reconnect
 const CLEANUP_INTERVAL = 60000; // Check for expired streams every minute
-let debuglog = false;
+let debuglog = false; // Desactivar logs verbose
 function writeLog(message: string) {
   if (!debuglog) return;
   const timestamp = new Date().toISOString();
@@ -646,10 +647,18 @@ class RTMPConnection {
 
       case MSG_AUDIO:
         writeLog(`      🎵 Audio data: ${payload.length} bytes`);
+        // Enviar datos de audio al gestor HLS en memoria
+        if (this.streamKey && hlsMemoryManager.isRunning()) {
+          hlsMemoryManager.writeRTMPData(payload);
+        }
         break;
 
       case MSG_VIDEO:
         writeLog(`      🎥 Video data: ${payload.length} bytes`);
+        // Enviar datos de video al gestor HLS en memoria
+        if (this.streamKey && hlsMemoryManager.isRunning()) {
+          hlsMemoryManager.writeRTMPData(payload);
+        }
         break;
 
       default:
@@ -883,8 +892,10 @@ class RTMPConnection {
   }
 
   private async handlePublish(csid: number, args: any[]) {
-    const streamKey = args[0] || "unknown";
+    const streamKey = args[0] || "default";
     this.streamKey = streamKey;
+    
+    writeLog(`📡 Stream publicado con key: ${streamKey}`);
 
     // Check for reconnection
     const previousClientId = checkForReconnection(streamKey, this.clientId);
@@ -934,6 +945,28 @@ class RTMPConnection {
       writeLog(`         Cliente anterior: ${previousClientId}`);
       writeLog(`         Nuevo cliente: ${this.clientId}`);
     }
+    
+    // Iniciar automáticamente HLS en memoria para este stream
+    // Solo si no hay ningún stream activo actualmente
+    try {
+      const currentStreamKey = hlsMemoryManager.getStreamKey();
+      
+      if (!hlsMemoryManager.isRunning()) {
+        await hlsMemoryManager.startHls(streamKey);
+        writeLog(`         ✅ HLS en memoria iniciado automáticamente para ${streamKey}`);
+      } else if (currentStreamKey !== streamKey) {
+        // Detener HLS actual y reiniciar con nuevo stream key
+        writeLog(`         🔄 Deteniendo HLS anterior (${currentStreamKey}) e iniciando nuevo (${streamKey})`);
+        await hlsMemoryManager.stopHls();
+        await hlsMemoryManager.startHls(streamKey);
+        writeLog(`         ✅ HLS reiniciado para nuevo stream: ${streamKey}`);
+      } else {
+        writeLog(`         ℹ️  HLS en memoria ya está corriendo para ${streamKey}`);
+      }
+    } catch (error) {
+      writeLog(`         ⚠️  Error iniciando HLS en memoria: ${error}`);
+    }
+    
     writeLog(`\n`);
   }
 
