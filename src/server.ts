@@ -1,4 +1,5 @@
 import { writeFileSync, appendFileSync } from "node:fs";
+import type { MSEStreaming } from "./mse-streaming.js";
 
 interface StreamStats {
   bytesReceived: number;
@@ -34,11 +35,11 @@ const LOG_FILE = `./logs/rtmp.log`;
 // Reconnection settings
 const RECONNECTION_TIMEOUT = 30000; // 30 seconds to reconnect
 const CLEANUP_INTERVAL = 60000; // Check for expired streams every minute
-
+let debugLog = false;
 function writeLog(message: string) {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] ${message}\n`;
-  console.log(message);
+  if (debugLog)console.log(message);
 
   try {
     appendFileSync(LOG_FILE, logMessage, "utf-8");

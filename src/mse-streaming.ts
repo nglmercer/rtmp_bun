@@ -1,4 +1,5 @@
 import type { RestApi } from "./api.js";
+import { FFmpegCommand } from "ffmpeg-lib";
 
 export class MSEStreaming {
   private api: RestApi;
@@ -8,6 +9,7 @@ export class MSEStreaming {
   > = new Map();
   private flvHeaders: Map<string, Uint8Array> = new Map();
   private sequenceNumbers: Map<string, number> = new Map();
+  public hlsProcesses: Map<string, any> = new Map();
 
   constructor(api: RestApi) {
     this.api = api;
@@ -360,6 +362,6 @@ export class MSEStreaming {
   private createStreamEndTag(): Uint8Array {
     // Create a simple end notification
     const endData = new TextEncoder().encode("end");
-    return this.createFLVTag(18, 0, endData);
+    return this.createFLVTag(8, 0, endData);
   }
 }

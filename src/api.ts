@@ -9,6 +9,7 @@ export class RestApi {
   private forwarder: StreamForwarder;
   private server: any;
   private streamClients: Map<string, Set<WebSocket>> = new Map();
+  private memoryStore: Map<string, Uint8Array> = new Map();
 
   constructor(config: AppConfig, forwarder: StreamForwarder) {
     this.config = config;
@@ -27,24 +28,11 @@ export class RestApi {
       hostname: "0.0.0.0",
       fetch(req, server) {
         return self.handleRequest(req, server);
-      },
-      websocket: {
-        open: (ws) => this.handleWebSocketOpen(ws),
-        message: (ws, message) => this.handleWebSocketMessage(ws, message),
-        close: (ws) => this.handleWebSocketClose(ws),
-        error: (ws, error) => this.handleWebSocketError(ws, error),
-        drain: (ws) => {
-          // Handle backpressure if needed
-          console.log("WebSocket buffer drained");
-        },
-      },
+      }
     });
 
     console.log(
       `REST API server started on port ${this.config.server.restApiPort}`,
-    );
-    console.log(
-      `🌐 WebSocket streaming endpoint: ws://localhost:${this.config.server.restApiPort}/stream/{streamKey}`,
     );
   }
 
@@ -53,108 +41,6 @@ export class RestApi {
       this.server.stop();
       console.log("REST API server stopped");
     }
-  }
-
-  private handleWebSocketOpen(ws: WebSocket): void {
-    // Extract stream key from request URL stored in ws.data
-    const url = new URL(ws.data.url);
-    const path = url.pathname;
-    const streamKey = path.split("/").pop() || "";
-
-    console.log(
-      `🔍 WebSocket connection attempt - Path: ${path}, StreamKey: ${streamKey}`,
-    );
-
-    if (path.startsWith("/stream/") && streamKey) {
-      console.log(`✅ WebSocket client connected to stream: ${streamKey}`);
-
-      // Add client to stream subscribers
-      if (!this.streamClients.has(streamKey)) {
-        this.streamClients.set(streamKey, new Set());
-        console.log(`📋 Created new stream group for: ${streamKey}`);
-      }
-      this.streamClients.get(streamKey)!.add(ws);
-      console.log(
-        `➕ Added client to stream: ${streamKey} (total: ${this.streamClients.get(streamKey)!.size})`,
-      );
-
-      // Store stream key in WebSocket data for later use
-      ws.data = { ...ws.data, streamKey };
-
-      // Don't send immediate test data - wait for actual stream data
-      // The connection should stay open waiting for real stream data
-      console.log(
-        `✅ WebSocket connection established for stream: ${streamKey}`,
-      );
-      console.log(`🔄 Waiting for stream data to be published...`);
-    } else {
-      console.log(`❌ WebSocket connected to invalid path: ${path}`);
-      ws.close();
-    }
-  }
-
-  private handleWebSocketMessage(
-    ws: WebSocket,
-    message: string | Buffer,
-  ): void {
-    const streamKey = ws.data?.streamKey;
-    if (!streamKey) return;
-
-    try {
-      if (typeof message === "string") {
-        const data = JSON.parse(message);
-        console.log(`📨 WebSocket message from ${streamKey}:`, data);
-
-        if (data.type === "ping") {
-          ws.send(
-            JSON.stringify({
-              type: "pong",
-              timestamp: new Date().toISOString(),
-            }),
-          );
-        }
-      } else {
-        console.log(
-          `📨 Binary message from ${streamKey}: ${message.length} bytes`,
-        );
-      }
-    } catch (error) {
-      console.error(`❌ Error processing WebSocket message:`, error);
-    }
-  }
-
-  private handleWebSocketClose(ws: WebSocket): void {
-    const streamKey = ws.data?.streamKey;
-    if (streamKey) {
-      console.log(`🔌 WebSocket client disconnected from stream: ${streamKey}`);
-      const clients = this.streamClients.get(streamKey);
-      if (clients) {
-        clients.delete(ws);
-        console.log(
-          `➖ Removed client from stream: ${streamKey} (remaining: ${clients.size})`,
-        );
-        if (clients.size === 0) {
-          this.streamClients.delete(streamKey);
-          console.log(`🗑️ Removed empty stream group: ${streamKey}`);
-        }
-      }
-    } else {
-      console.log(`🔌 WebSocket client disconnected (no stream key)`);
-    }
-  }
-
-  private handleWebSocketError(ws: WebSocket, error: Error): void {
-    const streamKey = ws.data?.streamKey;
-    console.error(
-      `❌ WebSocket error for stream ${streamKey || "unknown"}:`,
-      error,
-    );
-    console.error(`🔍 WebSocket error details:`, {
-      readyState: ws.readyState,
-      streamKey: streamKey,
-      errorType: error.name,
-      errorMessage: error.message,
-    });
   }
 
   public broadcastToStream(
@@ -202,6 +88,42 @@ export class RestApi {
       return new Response(null, { headers });
     }
 
+    // --- HLS Ingest Handlers (FFmpeg HTTP PUT/DELETE/GET) ---
+    if (path.startsWith("/hls_ingest/")) {
+      // CASE 1: FFmpeg sending data (PUT)
+      if (request.method === "PUT") {
+        const data = await request.arrayBuffer();
+        this.memoryStore.set(path, new Uint8Array(data));
+        console.log(`📦 Recibido en RAM: ${path} (${data.byteLength} bytes)`);
+        return new Response("OK");
+      }
+
+      // CASE 2: FFmpeg deleting old segments (DELETE)
+      if (request.method === "DELETE") {
+        this.memoryStore.delete(path);
+        console.log(`🗑️ Eliminado de RAM: ${path}`);
+        return new Response("OK");
+      }
+
+      // CASE 3: Player requesting video (GET)
+      if (request.method === "GET") {
+        const fileData = this.memoryStore.get(path);
+        
+        if (!fileData) {
+          return new Response("Not Found", { status: 404 });
+        }
+
+        return new Response(fileData, {
+          headers: {
+            "Content-Type": path.endsWith(".m3u8") 
+              ? "application/vnd.apple.mpegurl" 
+              : "video/mp2t",
+            "Access-Control-Allow-Origin": "*",
+          }
+        });
+      }
+    }
+
     // Serve static files
     if (path === "/" || path.endsWith(".html")) {
       const requestPath = path === "/" ? "/index.html" : path;
@@ -234,50 +156,6 @@ export class RestApi {
         return new Response("File not found", { status: 404 });
       } catch (error) {
         return new Response("File not found", { status: 404 });
-      }
-    }
-
-    // Handle WebSocket upgrade requests for /stream/* paths
-    const upgrade = request.headers.get("upgrade");
-    const connection = request.headers.get("connection");
-
-    if (
-      path.startsWith("/stream/") &&
-      upgrade === "websocket" &&
-      connection?.includes("Upgrade")
-    ) {
-      const streamKey = path.split("/").pop();
-      if (streamKey) {
-        console.log(
-          `🔍 Upgrading WebSocket connection for stream: ${streamKey}`,
-        );
-
-        // Use server upgrade function passed from fetch handler
-        if (typeof server.upgrade === "function") {
-          const success = server.upgrade(request, {
-            data: {
-              streamKey,
-              url: request.url,
-              path: path,
-            },
-          });
-
-          if (success) {
-            console.log(
-              `✅ WebSocket upgrade successful for stream: ${streamKey}`,
-            );
-            return undefined; // Connection handled by upgrade
-          } else {
-            console.log(`❌ WebSocket upgrade failed for stream: ${streamKey}`);
-            return new Response("WebSocket upgrade failed", { status: 500 });
-          }
-        } else {
-          // Fallback - let global handler handle this
-          console.log(
-            `🔄 Using fallback WebSocket handling for stream: ${streamKey}`,
-          );
-          return new Response(null, { status: 101 });
-        }
       }
     }
 
@@ -417,7 +295,7 @@ export class RestApi {
             // Get stream key from request body
             let streamKey = "test"; // default
             try {
-              const requestData = await request.json();
+              const requestData: any = await request.json();
               if (requestData.streamKey) {
                 streamKey = requestData.streamKey;
               }

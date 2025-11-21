@@ -10,9 +10,7 @@
     "build": "bun build src/main.ts --outdir dist --target bun",
     "test": "bun test",
     "test:api": "bun run test/api-test.ts",
-    "verify": "bun run verify.ts",
-    "demo": "bun run demo.ts",
-    "logs": "tail -f logs/rtmp.log"
+    "typecheck": "bunx tsc --noEmit"
   },
   "keywords": [
     "rtmp",
@@ -28,5 +26,8 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "ffmpeg-lib": "^1.1.5"
   }
 }
