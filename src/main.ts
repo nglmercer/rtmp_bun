@@ -1,101 +1,94 @@
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { cors } from "hono/cors";
-import { RTMPServer } from "./rtmp-server"; // Tu servidor RTMP existente
-import { hlsStore } from "./hls-store";     // El nuevo store en memoria
+// Asegúrate de importar tu clase RTMPServer correctamente
+import { RTMPServer } from "./rtmp-server"; 
+import { ramStore } from "./hls-store";
 
 const PORT = 3000;
 const app = new Hono();
 
-// 1. Configurar CORS
+// 1. Configurar CORS (Vital para que el reproductor web funcione)
 app.use("/*", cors({
   origin: "*",
   allowMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE"],
+  exposeHeaders: ["Content-Length", "Content-Type"],
 }));
 
 // -----------------------------------------------------------------------
 // A. RUTAS INTERNAS (FFmpeg -> Hono)
-// FFmpeg usa estas rutas para "subir" (PUT) y "borrar" (DELETE) archivos
 // -----------------------------------------------------------------------
+
+// PUT: FFmpeg sube archivos (.m3u8, .ts, .jpg)
 app.put("/internal/publish/:streamKey/:filename", async (c) => {
   const streamKey = c.req.param("streamKey");
   const filename = c.req.param("filename");
   
-  // Leer el binario que manda FFmpeg
+  // Consumir el stream de entrada INMEDIATAMENTE para evitar timeouts (-10053)
   const data = await c.req.arrayBuffer();
 
-  // Determinar Content-Type
   let contentType = "application/octet-stream";
   if (filename.endsWith(".m3u8")) contentType = "application/vnd.apple.mpegurl";
   else if (filename.endsWith(".ts")) contentType = "video/MP2T";
   else if (filename.endsWith(".jpg")) contentType = "image/jpeg";
 
-  // Guardar en RAM
-  hlsStore.saveFile(streamKey, filename, data, contentType);
+  ramStore.saveFile(streamKey, filename, data, contentType);
 
-  return c.text("OK");
+  return c.text("OK", 200);
 });
 
+// DELETE: FFmpeg ordena borrar segmentos viejos
 app.delete("/internal/publish/:streamKey/:filename", async (c) => {
   const streamKey = c.req.param("streamKey");
   const filename = c.req.param("filename");
   
-  // Borrar de RAM
-  hlsStore.deleteFile(streamKey, filename);
+  ramStore.deleteFile(streamKey, filename);
   
-  return c.text("OK");
+  return c.text("OK", 200);
 });
 
 // -----------------------------------------------------------------------
 // B. RUTAS PÚBLICAS (Clientes -> Hono)
-// Servir los archivos desde la RAM
 // -----------------------------------------------------------------------
+
 app.get("/live/:streamKey/:filename", (c) => {
   const streamKey = c.req.param("streamKey");
   const filename = c.req.param("filename");
 
-  const file = hlsStore.getFile(streamKey, filename);
+  const file = ramStore.getFile(streamKey, filename);
 
   if (!file) {
     return c.notFound();
   }
 
+  // Headers anti-cache para archivos en vivo
   c.header("Content-Type", file.contentType);
-  c.header("Cache-Control", "no-cache, no-store, must-revalidate");
+  c.header("Access-Control-Allow-Origin", "*");
   
-  // --- CORRECCIÓN AQUÍ ---
-  // Opción 1: Forzar el tipo (más rápido)
-  //return c.body(file.buffer as any); 
-  
-  return new Response(file.buffer, {
+  if (filename.endsWith('.m3u8') || filename.endsWith('.jpg')) {
+      c.header("Cache-Control", "no-cache, no-store, must-revalidate");
+  } else {
+      // Los segmentos .ts se pueden cachear un poco más (son inmutables)
+      c.header("Cache-Control", "public, max-age=10");
+  }
+
+  return new Response(file.data, {
     headers: c.res.headers
   });
 });
 
-// 3. Servir archivos estáticos normales (tu frontend, player, etc)
+// Servir frontend si lo tienes
 app.use('*', serveStatic({ 
   root: './public',
   rewriteRequestPath: (path) => path.replace(/^\/public/, '/'),
 }));
 
-// Endpoint de estado
-app.get("/", (c) => {
-  return c.json({ 
-    status: "online", 
-    mode: "In-Memory HLS (Zero Disk Write)",
-    endpoints: {
-      rtmp: `rtmp://localhost:1935/live/{streamKey}`,
-      hls: `http://localhost:${PORT}/live/{streamKey}/index.m3u8`,
-      preview: `http://localhost:${PORT}/live/{streamKey}/preview.jpg`
-    }
-  });
-});
-
-// Iniciar Servidor RTMP
-// Asegúrate de pasarle el puerto HTTP a FFmpegTranscoder dentro de RTMPServer si lo modificaste
+console.log(`🚀 Servidor HTTP/HLS corriendo en http://localhost:${PORT}`);
 const rtmpServer = new RTMPServer(1935);
 
+// Exportar para Bun
 export default {
   port: PORT,
   fetch: app.fetch,
+  // maxRequestBodySize: 1024 * 1024 * 50 // Opcional: Aumentar límite si es necesario (50MB)
 };

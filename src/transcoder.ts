@@ -11,92 +11,107 @@ export class FFmpegTranscoder {
   }
 
   start() {
-    console.log(`[Transcoder] 🎬 Iniciando FFmpeg (Fixed Filters) para: ${this.streamKey}`);
+    console.log(`[Transcoder] 🎬 Iniciando Transmisión RAM para: ${this.streamKey}`);
 
-    const hlsBaseUrl = `http://127.0.0.1:${this.httpPort}/internal/publish/${this.streamKey}/`;
+    // Rutas locales
+    const baseUrl = `http://127.0.0.1:${this.httpPort}/internal/publish/${this.streamKey}`;
+    const hlsUrl = `${baseUrl}/index.m3u8`;
+    const previewUrl = `${baseUrl}/preview.jpg`;
 
     this.process = spawn([
       "ffmpeg",
+      "-y", // Sobrescribir sin preguntar
+      "-hide_banner",
+      "-loglevel", "error", // Reducir ruido, ver solo errores reales
       "-re",
-      "-i", "pipe:0",
-      
-      // --- CORRECCIÓN AQUÍ: FILTRO INTEGRADO ---
-      // Explicación: 
-      // 1. [0:v]split=2[v_hls][v_temp] -> Duplica el video original.
-      // 2. ;[v_temp]fps=1/5[v_img]     -> Toma la copia temporal, baja los FPS y la llama [v_img].
+      "-i", "pipe:0", 
+
+      // --- PROCESAMIENTO ---
       "-filter_complex", "[0:v]split=2[v_hls][v_temp];[v_temp]fps=1/5[v_img]",
 
       // ============================
-      // SALIDA 1: HLS (Video + Audio)
+      // SALIDA 1: HLS (Video + Audio) -> RAM
       // ============================
-      "-map", "[v_hls]",  // Usamos la copia limpia para el video fluido
-      "-map", "0:a",      // Usamos el audio original
+      "-map", "[v_hls]",
+      "-map", "0:a",
       
       "-c:v", "libx264",
-      "-preset", "superfast",
+      "-preset", "superfast", 
       "-tune", "zerolatency",
       "-r", "30",
-      "-g", "30",
-      "-keyint_min", "30",
+      "-g", "60",
+      "-keyint_min", "60",
       "-sc_threshold", "0",
       
       "-c:a", "aac",
       "-ar", "44100",
       "-b:a", "128k",
 
+      // -- HLS FLAGS ROBUSTOS PARA WINDOWS --
       "-f", "hls",
-      "-hls_time", "1",
+      "-hls_time", "2",
       "-hls_list_size", "5",
       "-hls_flags", "delete_segments",
       "-method", "PUT",
-      "-http_persistent", "0",
-      `${hlsBaseUrl}index.m3u8`,
+      // En Windows, a veces desactivar persistent ayuda si Hono cierra rápido, 
+      // pero intentaremos mantenerlo con manejo de errores.
+      "-send_expect_100", "0",   // <--- IMPORTANTE: No esperar confirmación de cabecera
+      "-http_persistent", "1",   // Intentamos mantener persistencia en segmentos para velocidad
+      "-headers", "Connection: keep-alive\r\n", 
+      hlsUrl,
 
       // ============================
-      // SALIDA 2: PREVIEW JPG
+      // SALIDA 2: PREVIEW JPG -> RAM
       // ============================
-      "-map", "[v_img]", // Usamos la copia que YA TIENE los fps bajados en el filter_complex
-      
-      // NOTA: Eliminamos "-vf fps=1/5" de aquí porque ya lo hicimos arriba
-      
+      "-map", "[v_img]",
       "-update", "1",
       "-f", "image2",
+      "-q:v", "5", // Calidad media para que pese menos la transferencia
       "-method", "PUT",
-      "-http_persistent", "0",
+      // Para imágenes en Windows, desactivar persistencia suele ser más estable
+      // porque son requests puntuales espaciados por 5 segundos.
+      "-send_expect_100", "0",   // <--- IMPORTANTE
+      "-http_persistent", "0",   // <--- APAGAR persistencia para imágenes en Windows
+      "-headers", "Connection: close\r\n", // <--- Forzar cierre limpio tras cada JPG
       "-ignore_io_errors", "1",
-      `${hlsBaseUrl}preview.jpg`
+      previewUrl
 
     ], {
       stdin: "pipe",
-      stdout: "ignore",
+      stdout: "ignore", 
       stderr: "inherit"
     });
 
     this.process.exited.then((code) => {
-        if (code !== 0 && code !== null) {
-            console.error(`[Transcoder] ⚠️ FFmpeg salió con código ${code}`);
+      // Ignoramos el código 255 (interrupción manual) o null
+        if (code !== 0 && code !== null && code !== 255) {
+            console.error(`[Transcoder] ⚠️ FFmpeg cerrado con código ${code}`);
         } else {
-            console.log(`[Transcoder] 🛑 FFmpeg finalizó correctamente.`);
+            console.log(`[Transcoder] 🛑 Stream finalizado limpiamente.`);
         }
     });
   }
 
   stop() {
     if (this.process) {
-      console.log(`[Transcoder] 🛑 Deteniendo: ${this.streamKey}`);
-      this.process.kill();
+      console.log(`[Transcoder] 🛑 Deteniendo stream: ${this.streamKey}`);
+      this.process.kill(); // SIGTERM
       this.process = null;
     }
   }
 
   write(data: Buffer) {
     if (!this.process || !this.process.stdin) return;
+    if (this.process.exitCode !== null) return;
+
     try {
-      const stdin = this.process.stdin as unknown as FileSink;
-      stdin.write(data);
-      stdin.flush();
-    } catch (error) {
-       // Ignorar
+        const stdin = this.process.stdin as unknown as FileSink;
+        // En Bun, write devuelve bytes escritos, no booleano de drenaje
+        stdin.write(data);
+        // Flush suele ser automático en pipes, pero forzamos si es necesario
+        stdin.flush(); 
+    } catch (e) {
+       // Silencio en pipes rotos
     }
   }
 }
