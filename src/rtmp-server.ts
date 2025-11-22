@@ -1,5 +1,7 @@
 import { writeFileSync, appendFileSync } from "node:fs";
-import type { MSEStreaming } from "./mse-streaming.js";
+// import { hlsMemoryManager } from "./api/hls-memory-manager.js"; // ELIMINADO
+import { FFmpegTranscoder } from "./transcoder"; // NUEVO
+import { FLVWrapper } from "./flv-utils";        // NUEVO
 
 interface StreamStats {
   bytesReceived: number;
@@ -35,13 +37,17 @@ const LOG_FILE = `./logs/rtmp.log`;
 // Reconnection settings
 const RECONNECTION_TIMEOUT = 30000; // 30 seconds to reconnect
 const CLEANUP_INTERVAL = 60000; // Check for expired streams every minute
-let debugLog = false;
+let debuglog = false; // Desactivar logs verbose
+
 function writeLog(message: string) {
+  if (!debuglog) return;
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] ${message}\n`;
-  if (debugLog)console.log(message);
+  console.log(message);
 
   try {
+    // Asegurarse de que el directorio logs existe antes de escribir (opcional pero recomendado)
+    // mkdirSync("./logs", { recursive: true }); 
     appendFileSync(LOG_FILE, logMessage, "utf-8");
   } catch (error) {
     console.error(`Failed to write to log file: ${error}`);
@@ -256,8 +262,11 @@ class RTMPConnection {
   private peerBandwidth: number = 2500000;
   private bytesReceived: number = 0;
   private lastAckSent: number = 0;
-  private streamKey: string | null = null;
+  public streamKey: string | null = null; // Changed to public to access in close handler
   private isReconnection: boolean = false;
+  
+  // 🔥 Transcoder Instance
+  private transcoder: FFmpegTranscoder | null = null;
 
   private incompleteMessages: Map<
     number,
@@ -279,6 +288,14 @@ class RTMPConnection {
   constructor(socket: any, clientId: string) {
     this.socket = socket;
     this.clientId = clientId;
+  }
+  
+  // Método público para detener el transcodificador al cerrar conexión
+  public stopTranscoding() {
+      if (this.transcoder) {
+          this.transcoder.stop();
+          this.transcoder = null;
+      }
   }
 
   async handleData(data: Buffer | Uint8Array) {
@@ -611,6 +628,8 @@ class RTMPConnection {
     csid: number,
     streamId: number,
   ) {
+    const timestamp = this.lastTimestamp.get(csid) || 0;
+
     switch (messageType) {
       case MSG_SET_CHUNK_SIZE:
         if (payload.length >= 4) {
@@ -646,10 +665,20 @@ class RTMPConnection {
 
       case MSG_AUDIO:
         writeLog(`      🎵 Audio data: ${payload.length} bytes`);
+        // ✅ ENVIAR A FFMPEG (usando el transcoder)
+        if (this.transcoder) {
+            const flvTag = FLVWrapper.wrapTag(8, timestamp, payload);
+            this.transcoder.write(flvTag);
+        }
         break;
 
       case MSG_VIDEO:
         writeLog(`      🎥 Video data: ${payload.length} bytes`);
+        // ✅ ENVIAR A FFMPEG (usando el transcoder)
+        if (this.transcoder) {
+            const flvTag = FLVWrapper.wrapTag(9, timestamp, payload);
+            this.transcoder.write(flvTag);
+        }
         break;
 
       default:
@@ -724,7 +753,7 @@ class RTMPConnection {
         case "createStream":
           writeLog(`      🆕 createStream`);
           this.sendCommandResponse(csid, "_result", transactionId, null, 1);
-          writeLog(`         ✅ Stream ID 1 asignado`);
+          writeLog(`        ✅ Stream ID 1 asignado`);
           break;
 
         case "publish":
@@ -858,7 +887,7 @@ class RTMPConnection {
     streamBegin.writeUInt16BE(0, 0); // Event type: StreamBegin
     streamBegin.writeUInt32BE(0, 2); // Stream ID
     this.sendControlMessage(2, MSG_USER_CONTROL, streamBegin);
-    writeLog(`         📤 Stream Begin enviado`);
+    writeLog(`        📤 Stream Begin enviado`);
 
     // Send _result with connection info
     this.sendCommandResponse(
@@ -878,13 +907,15 @@ class RTMPConnection {
       },
     );
 
-    writeLog(`         ✅ _result(Connect.Success) enviado`);
+    writeLog(`        ✅ _result(Connect.Success) enviado`);
     writeLog(`\n      🎉🎉🎉 CONEXIÓN EXITOSA 🎉🎉🎉\n`);
   }
 
   private async handlePublish(csid: number, args: any[]) {
-    const streamKey = args[0] || "unknown";
+    const streamKey = args[0] || "default";
     this.streamKey = streamKey;
+    
+    writeLog(`📡 Stream publicado con key: ${streamKey}`);
 
     // Check for reconnection
     const previousClientId = checkForReconnection(streamKey, this.clientId);
@@ -929,11 +960,30 @@ class RTMPConnection {
       ? "🔄🔄🔄 STREAM RECONECTADO 🔄🔄🔄"
       : "🎬🎬🎬 STREAM PUBLICADO 🎬🎬🎬";
     writeLog(`\n      ${status}`);
-    writeLog(`         Stream Key: ${streamKey}`);
+    writeLog(`        Stream Key: ${streamKey}`);
     if (this.isReconnection) {
-      writeLog(`         Cliente anterior: ${previousClientId}`);
-      writeLog(`         Nuevo cliente: ${this.clientId}`);
+      writeLog(`        Cliente anterior: ${previousClientId}`);
+      writeLog(`        Nuevo cliente: ${this.clientId}`);
     }
+    
+    // ✅ INICIAR EL TRANSCODIFICADOR DE FFMPEG
+    try {
+        if (this.transcoder) {
+            this.transcoder.stop();
+        }
+        
+        this.transcoder = new FFmpegTranscoder(streamKey);
+        this.transcoder.start();
+        
+        // Enviar cabecera FLV requerida por FFmpeg
+        this.transcoder.write(FLVWrapper.getHeader());
+        
+        writeLog(`        🚀 FFmpeg Transcoder iniciado para ${streamKey}`);
+        
+    } catch (error) {
+        writeLog(`        ❌ Error iniciando Transcoder: ${error}`);
+    }
+    
     writeLog(`\n`);
   }
 
@@ -1105,9 +1155,12 @@ class RTMPServer {
               writeLog(`   📈 Bitrate: ${avgBitrate.toFixed(0)} kbps`);
 
               // Add to pending streams for reconnection if we have a stream key
-              if (conn["streamKey"]) {
-                addPendingStream(clientId, conn["streamKey"], stats);
+              if (conn.streamKey) {
+                addPendingStream(clientId, conn.streamKey, stats);
               }
+              
+              // ✅ STOP TRANSCODING
+              conn.stopTranscoding();
 
               streams.delete(clientId);
             }

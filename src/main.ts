@@ -1,72 +1,96 @@
-import { loadConfig } from "./config.js";
-import { RestApi } from "./api.js";
-import { StreamForwarder } from "./forwarder.js";
-import { RTMPServer } from "./server.js";
-import { MSEStreaming } from "./mse-streaming.js";
+import { Hono } from "hono";
+import { serveStatic } from "hono/bun";
+import { cors } from "hono/cors";
+import { RTMPServer } from "./rtmp-server"; // Tu servidor RTMP existente
+import { hlsStore } from "./hls-store";     // El nuevo store en memoria
 
-async function main() {
-  console.log("🚀 Starting RTMP Bun Server...");
+const PORT = 3000;
+const app = new Hono();
 
-  // Load configuration
-  const config = await loadConfig();
-  console.log(
-    `📋 Configuration loaded. RTMP Port: ${config.server.port}, API Port: ${config.server.restApiPort}`,
-  );
+// 1. Configurar CORS
+app.use("/*", cors({
+  origin: "*",
+  allowMethods: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE"],
+}));
 
-  // Initialize stream forwarder
-  const forwarder = new StreamForwarder(config);
+// -----------------------------------------------------------------------
+// A. RUTAS INTERNAS (FFmpeg -> Hono)
+// FFmpeg usa estas rutas para "subir" (PUT) y "borrar" (DELETE) archivos
+// -----------------------------------------------------------------------
+app.put("/internal/publish/:streamKey/:filename", async (c) => {
+  const streamKey = c.req.param("streamKey");
+  const filename = c.req.param("filename");
+  
+  // Leer el binario que manda FFmpeg
+  const data = await c.req.arrayBuffer();
 
-  // Initialize REST API
-  const api = new RestApi(config, forwarder);
+  // Determinar Content-Type
+  let contentType = "application/octet-stream";
+  if (filename.endsWith(".m3u8")) contentType = "application/vnd.apple.mpegurl";
+  else if (filename.endsWith(".ts")) contentType = "video/MP2T";
+  else if (filename.endsWith(".jpg")) contentType = "image/jpeg";
 
-  // Initialize MSE Streaming
-  const mseStreaming = new MSEStreaming(api);
+  // Guardar en RAM
+  hlsStore.saveFile(streamKey, filename, data, contentType);
 
-  // Start the API server
-  await api.start();
-
-  // MSE streaming will start automatically when streams are published
-  console.log("🎥 MSE Streaming initialized and ready");
-
-  // Initialize RTMP Server (constructor starts the server automatically)
-  new RTMPServer(config.server.port, mseStreaming);
-
-  // Graceful shutdown
-  const shutdown = async () => {
-    console.log("\n🛑 Shutting down gracefully...");
-    await forwarder.stopForwarding("all");
-    // Note: MSEStreaming cleanup is handled automatically when streams disconnect
-    // No need to call stopStreaming here as it requires a specific streamKey
-    await api.stop();
-    // Note: RTMPServer cleanup handled by process exit
-    process.exit(0);
-  };
-
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-
-  console.log("✅ Server started successfully!");
-  console.log(
-    `📡 RTMP Server listening on ${config.server.host}:${config.server.port}`,
-  );
-  if (config.server.enableRestApi) {
-    console.log(
-      `🌐 REST API available at http://localhost:${config.server.restApiPort}`,
-    );
-    console.log(
-      `🎥 MSE Stream Viewer available at http://localhost:${config.server.restApiPort}/`,
-    );
-    console.log(
-      `🔗 WebSocket streaming endpoint: ws://localhost:${config.server.restApiPort}/stream/live`,
-    );
-  }
-  console.log("💡 Use Ctrl+C to stop the server");
-
-  // Keep the process alive
-  process.stdin.resume();
-}
-
-main().catch((error) => {
-  console.error("❌ Failed to start server:", error);
-  process.exit(1);
+  return c.text("OK");
 });
+
+app.delete("/internal/publish/:streamKey/:filename", async (c) => {
+  const streamKey = c.req.param("streamKey");
+  const filename = c.req.param("filename");
+  
+  // Borrar de RAM
+  hlsStore.deleteFile(streamKey, filename);
+  
+  return c.text("OK");
+});
+
+// -----------------------------------------------------------------------
+// B. RUTAS PÚBLICAS (Clientes -> Hono)
+// Servir los archivos desde la RAM
+// -----------------------------------------------------------------------
+app.get("/live/:streamKey/:filename", (c) => {
+  const streamKey = c.req.param("streamKey");
+  const filename = c.req.param("filename");
+
+  const file = hlsStore.getFile(streamKey, filename);
+
+  if (!file) {
+    return c.notFound();
+  }
+
+  // Headers importantes para baja latencia
+  c.header("Content-Type", file.contentType);
+  c.header("Cache-Control", "no-cache, no-store, must-revalidate");
+  
+  return c.body(file.buffer);
+});
+
+// 3. Servir archivos estáticos normales (tu frontend, player, etc)
+app.use('*', serveStatic({ 
+  root: './public',
+  rewriteRequestPath: (path) => path.replace(/^\/public/, '/'),
+}));
+
+// Endpoint de estado
+app.get("/", (c) => {
+  return c.json({ 
+    status: "online", 
+    mode: "In-Memory HLS (Zero Disk Write)",
+    endpoints: {
+      rtmp: `rtmp://localhost:1935/live/{streamKey}`,
+      hls: `http://localhost:${PORT}/live/{streamKey}/index.m3u8`,
+      preview: `http://localhost:${PORT}/live/{streamKey}/preview.jpg`
+    }
+  });
+});
+
+// Iniciar Servidor RTMP
+// Asegúrate de pasarle el puerto HTTP a FFmpegTranscoder dentro de RTMPServer si lo modificaste
+const rtmpServer = new RTMPServer(1935);
+
+export default {
+  port: PORT,
+  fetch: app.fetch,
+};

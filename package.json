@@ -28,6 +28,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "ffmpeg-lib": "^1.1.5"
+    "ffmpeg-lib": "^1.1.5",
+    "hono": "^4.10.6"
   }
 }
