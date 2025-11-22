@@ -2,48 +2,138 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Test Player HLS</title>
+    <title>Visor RTMP - Default</title>
     <style>
-        body { background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        video { width: 80%; max-width: 1000px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        body {
+            background: #000;
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            font-family: monospace;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            max-width: 1280px; /* Ajusta según prefieras */
+            object-fit: contain; /* Mantiene la proporción */
+        }
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #0f0; /* Verde hacker */
+            padding: 5px 10px;
+            border-radius: 4px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        #status.error { color: #f00; }
+        #status.waiting { color: #ff0; }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flv.js@latest"></script>
 </head>
 <body>
 
-    <video id="video" controls autoplay muted></video>
+    <div id="status">Iniciando...</div>
+    <video id="videoElement" controls autoplay muted></video>
 
     <script>
-        var video = document.getElementById('video');
-        
-        // ---------------------------------------------------------
-        var videoSrc = 'http://localhost:3000/live/default/index.m3u8';
-        // ---------------------------------------------------------
-        //var videoSrc = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'; // URL de prueba pública
+        const STREAM_URL = 'http://localhost:3000/live/default.flv';
+        const videoElement = document.getElementById('videoElement');
+        const statusElement = document.getElementById('status');
+        let flvPlayer = null;
+        let retryTimer = null;
 
-        // 3. Lógica de carga
-        if (Hls.isSupported()) {
-            console.log("HLS.js soportado. Iniciando...");
-            var hls = new Hls({
-                debug: false, // Activa logs en la consola (F12) para ver errores
-            });
-            hls.loadSource(videoSrc);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                video.play();
-            });
-            // Manejo básico de errores
-            hls.on(Hls.Events.ERROR, function (event, data) {
-                console.error("Error HLS:", data);
-            });
-
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            // Fallback para Safari (Soporte nativo)
-            video.src = videoSrc;
-            video.addEventListener('loadedmetadata', function() {
-                video.play();
-            });
+        function showStatus(msg, type = 'normal') {
+            statusElement.innerText = `📡 ${msg}`;
+            statusElement.className = type;
         }
+
+        function initPlayer() {
+            if (!flvjs.isSupported()) {
+                showStatus('FLV.js no soportado', 'error');
+                return;
+            }
+
+            if (flvPlayer) {
+                destroyPlayer();
+            }
+
+            showStatus('Conectando...', 'waiting');
+
+            flvPlayer = flvjs.createPlayer({
+                type: 'flv',
+                url: STREAM_URL,
+                isLive: true,
+                hasAudio: true,
+                hasVideo: true,
+                cors: true
+            }, {
+                // Configuración de baja latencia
+                enableStashBuffer: false,
+                lazyLoad: false,
+                autoCleanupSourceBuffer: true
+            });
+
+            flvPlayer.attachMediaElement(videoElement);
+
+            flvPlayer.on(flvjs.Events.LOADING_COMPLETE, () => {
+                showStatus('Stream terminado (reiniciando...)', 'waiting');
+                retryConnection();
+            });
+
+            flvPlayer.on(flvjs.Events.ERROR, (errType, errDetail) => {
+                console.log('Error FLV:', errType, errDetail);
+                // Si es error de red (servidor apagado o stream no listo), reintentamos
+                if (errType === flvjs.ErrorTypes.NETWORK_ERROR) {
+                    showStatus('Esperando Stream...', 'waiting');
+                    retryConnection();
+                }
+            });
+
+            flvPlayer.on(flvjs.Events.MEDIA_INFO, () => {
+                showStatus('EN VIVO', 'normal');
+            });
+
+            try {
+                flvPlayer.load();
+                flvPlayer.play().catch(e => {
+                    // Chrome bloquea autoplay con sonido.
+                    console.warn("Autoplay bloqueado, el usuario debe interactuar:", e);
+                    showStatus('Click para reproducir (Audio bloqueado)', 'waiting');
+                });
+            } catch (e) {
+                retryConnection();
+            }
+        }
+
+        function destroyPlayer() {
+            if (flvPlayer) {
+                flvPlayer.pause();
+                flvPlayer.unload();
+                flvPlayer.detachMediaElement();
+                flvPlayer.destroy();
+                flvPlayer = null;
+            }
+        }
+
+        function retryConnection() {
+            if (retryTimer) clearTimeout(retryTimer);
+            destroyPlayer();
+            // Reintentar en 3 segundos
+            retryTimer = setTimeout(() => {
+                console.log("Reintentando conexión...");
+                initPlayer();
+            }, 3000);
+        }
+
+        // Iniciar al cargar
+        document.addEventListener('DOMContentLoaded', initPlayer);
+
     </script>
 </body>
 </html>

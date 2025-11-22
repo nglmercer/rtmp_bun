@@ -2,8 +2,9 @@ import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { cors } from "hono/cors";
 // Asegúrate de importar tu clase RTMPServer correctamente
-import { RTMPServer } from "./rtmp-server"; 
-import { ramStore } from "./hls-store";
+import { RTMPServer } from "./rtmp-server";
+import { flvStreamManager } from "./flv-stream-manager";
+import { FLVWrapper } from "./flv-utils";
 
 const PORT = 3000;
 const app = new Hono();
@@ -16,65 +17,95 @@ app.use("/*", cors({
 }));
 
 // -----------------------------------------------------------------------
-// A. RUTAS INTERNAS (FFmpeg -> Hono)
+// A. RUTAS INTERNAS - ELIMINADAS PARA FLV
 // -----------------------------------------------------------------------
-
-// PUT: FFmpeg sube archivos (.m3u8, .ts, .jpg)
-app.put("/internal/publish/:streamKey/:filename", async (c) => {
-  const streamKey = c.req.param("streamKey");
-  const filename = c.req.param("filename");
-  
-  // Consumir el stream de entrada INMEDIATAMENTE para evitar timeouts (-10053)
-  const data = await c.req.arrayBuffer();
-
-  let contentType = "application/octet-stream";
-  if (filename.endsWith(".m3u8")) contentType = "application/vnd.apple.mpegurl";
-  else if (filename.endsWith(".ts")) contentType = "video/MP2T";
-  else if (filename.endsWith(".jpg")) contentType = "image/jpeg";
-
-  ramStore.saveFile(streamKey, filename, data, contentType);
-
-  return c.text("OK", 200);
-});
-
-// DELETE: FFmpeg ordena borrar segmentos viejos
-app.delete("/internal/publish/:streamKey/:filename", async (c) => {
-  const streamKey = c.req.param("streamKey");
-  const filename = c.req.param("filename");
-  
-  ramStore.deleteFile(streamKey, filename);
-  
-  return c.text("OK", 200);
-});
+// Ya no necesitamos rutas internas para HLS/segmentos
+// El stream FLV se maneja directamente vía pipe
 
 // -----------------------------------------------------------------------
 // B. RUTAS PÚBLICAS (Clientes -> Hono)
 // -----------------------------------------------------------------------
 
-app.get("/live/:streamKey/:filename", (c) => {
-  const streamKey = c.req.param("streamKey");
+// Ruta principal para streaming FLV vía HTTP
+app.get("/live/:filename", async (c) => {
+  // 1. Capturamos todo el nombre del archivo, ej: "obs_stream.flv"
   const filename = c.req.param("filename");
 
-  const file = ramStore.getFile(streamKey, filename);
+  console.log(`[Debug] Petición recibida para: ${filename}`);
 
-  if (!file) {
-    return c.notFound();
+  // 2. Validación de seguridad básica
+  if (!filename || !filename.endsWith('.flv')) {
+    return c.text("Formato invalido. Se requiere .flv", 400);
   }
 
-  // Headers anti-cache para archivos en vivo
-  c.header("Content-Type", file.contentType);
-  c.header("Access-Control-Allow-Origin", "*");
+  // 3. Limpiamos la extensión para obtener la Key real
+  // "obs_stream.flv" -> "obs_stream"
+  const streamKey = filename.replace('.flv', '');
   
-  if (filename.endsWith('.m3u8') || filename.endsWith('.jpg')) {
-      c.header("Cache-Control", "no-cache, no-store, must-revalidate");
-  } else {
-      // Los segmentos .ts se pueden cachear un poco más (son inmutables)
-      c.header("Cache-Control", "public, max-age=10");
+  console.log(`[Debug] StreamKey limpia: ${streamKey}`);
+
+  if (!streamKey) {
+      return c.text("StreamKey vacía", 400);
   }
 
-  return new Response(file.data, {
-    headers: c.res.headers
+  // --- A PARTIR DE AQUI TU LÓGICA ORIGINAL ---
+
+  // Obtener o crear stream FLV
+  const stream = flvStreamManager.getOrCreateStream(streamKey);
+  
+  if (!stream) {
+    console.error(`[FLV] ❌ Stream no encontrado en Manager: ${streamKey}`);
+    return c.text("Stream no activo", 404);
+  }
+
+  // Crear un Response con streaming
+  const body = new ReadableStream({
+    start(controller) {
+      console.log(`[FLV] 🎥 Cliente HTTP conectado: ${streamKey}`);
+      
+      // Enviar cabecera FLV inicial
+      controller.enqueue(FLVWrapper.getHeader());
+      
+      const callback = (data: Buffer) => {
+        // Verificar que el controller no esté cerrado antes de enviar
+        if (controller.desiredSize !== null) {
+             controller.enqueue(data);
+        }
+      };
+      
+      stream.subscribers.add(callback);
+      
+      // Manejar desconexión (abort signal)
+      c.req.raw.signal.addEventListener('abort', () => {
+        console.log(`[FLV] 📡 Cliente desconectado: ${streamKey}`);
+        stream.subscribers.delete(callback);
+      });
+    },
+    cancel() {
+       // Lógica de limpieza extra si es necesaria
+    }
   });
+
+  return new Response(body, {
+    headers: {
+      "Content-Type": "video/x-flv",
+      "Access-Control-Allow-Origin": "*",
+      "Connection": "keep-alive",
+      "Cache-Control": "no-cache"
+    }
+  });
+});
+
+// Ruta para obtener estadísticas del stream
+app.get("/live/:streamKey/status", (c) => {
+  const streamKey = c.req.param("streamKey");
+  const stats = flvStreamManager.getStreamStats(streamKey);
+  
+  if (!stats) {
+    return c.json({ error: "Stream no encontrado" }, 404);
+  }
+  
+  return c.json(stats);
 });
 
 // Servir frontend si lo tienes
@@ -83,7 +114,7 @@ app.use('*', serveStatic({
   rewriteRequestPath: (path) => path.replace(/^\/public/, '/'),
 }));
 
-console.log(`🚀 Servidor HTTP/HLS corriendo en http://localhost:${PORT}`);
+console.log(`🚀 Servidor HTTP/FLV corriendo en http://localhost:${PORT}`);
 const rtmpServer = new RTMPServer(1935);
 
 // Exportar para Bun
