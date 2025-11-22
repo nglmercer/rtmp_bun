@@ -26,63 +26,58 @@ app.use("/*", cors({
 // B. RUTAS PÚBLICAS (Clientes -> Hono)
 // -----------------------------------------------------------------------
 
-// Ruta principal para streaming FLV vía HTTP
 app.get("/live/:filename", async (c) => {
-  // 1. Capturamos todo el nombre del archivo, ej: "obs_stream.flv"
   const filename = c.req.param("filename");
-
-  console.log(`[Debug] Petición recibida para: ${filename}`);
-
-  // 2. Validación de seguridad básica
+  
+  // Validación básica
   if (!filename || !filename.endsWith('.flv')) {
     return c.text("Formato invalido. Se requiere .flv", 400);
   }
 
-  // 3. Limpiamos la extensión para obtener la Key real
-  // "obs_stream.flv" -> "obs_stream"
   const streamKey = filename.replace('.flv', '');
   
-  console.log(`[Debug] StreamKey limpia: ${streamKey}`);
-
-  if (!streamKey) {
-      return c.text("StreamKey vacía", 400);
-  }
-
-  // --- A PARTIR DE AQUI TU LÓGICA ORIGINAL ---
-
-  // Obtener o crear stream FLV
+  // Verificar existencia del stream
   const stream = flvStreamManager.getOrCreateStream(streamKey);
   
-  if (!stream) {
-    console.error(`[FLV] ❌ Stream no encontrado en Manager: ${streamKey}`);
-    return c.text("Stream no activo", 404);
+  // Opcional: Si quieres ser estricto y devolver 404 si no hay nadie transmitiendo
+  if (!stream.isActive) {
+     return c.text("Stream offline", 404);
   }
 
-  // Crear un Response con streaming
   const body = new ReadableStream({
     start(controller) {
-      console.log(`[FLV] 🎥 Cliente HTTP conectado: ${streamKey}`);
-      
-      // Enviar cabecera FLV inicial
-      controller.enqueue(FLVWrapper.getHeader());
-      
+      console.log(`[FLV] 🎥 Nuevo espectador conectado: ${streamKey}`);
+
+      // DEFINIR EL CALLBACK
       const callback = (data: Buffer) => {
-        // Verificar que el controller no esté cerrado antes de enviar
+        // Solo enviamos si el cliente sigue conectado
         if (controller.desiredSize !== null) {
-             controller.enqueue(data);
+           controller.enqueue(data);
         }
       };
+
+      // --- CORRECCIÓN AQUÍ ---
+      // ❌ NO HACER ESTO (Tu código anterior):
+      // controller.enqueue(FLVWrapper.getHeader()); // Esto enviaba doble cabecera o cabecera sin config
+      // stream.subscribers.add(callback); // Esto se saltaba el cache de headers
+
+      // ✅ HACER ESTO (Usar la lógica del Manager):
+      // El método subscribe se encarga de enviar:
+      // 1. FLV Header (si está en cache)
+      // 2. MetaData (si está en cache)
+      // 3. Video Sequence Header (CRÍTICO: SPS/PPS para decodificar)
+      // 4. Audio Sequence Header
+      flvStreamManager.subscribe(streamKey, callback);
       
-      stream.subscribers.add(callback);
-      
-      // Manejar desconexión (abort signal)
+      // Manejar desconexión
       c.req.raw.signal.addEventListener('abort', () => {
-        console.log(`[FLV] 📡 Cliente desconectado: ${streamKey}`);
-        stream.subscribers.delete(callback);
+        console.log(`[FLV] 📡 Espectador desconectado: ${streamKey}`);
+        // Usar el método unsubscribe del manager
+        flvStreamManager.unsubscribe(streamKey, callback);
       });
     },
     cancel() {
-       // Lógica de limpieza extra si es necesaria
+       // Limpieza adicional si fuera necesaria
     }
   });
 
@@ -91,7 +86,9 @@ app.get("/live/:filename", async (c) => {
       "Content-Type": "video/x-flv",
       "Access-Control-Allow-Origin": "*",
       "Connection": "keep-alive",
-      "Cache-Control": "no-cache"
+      "Cache-Control": "no-cache, no-store, must-revalidate", // Importante para live
+      "Pragma": "no-cache",
+      "Expires": "0"
     }
   });
 });
