@@ -66,22 +66,28 @@
 
             showStatus('Conectando...', 'waiting');
 
-            // 2. Creación del player usando mpegts
             player = mpegts.createPlayer({
-                type: 'flv',  // mpegts maneja flv sobre http igual que flv.js
+                type: 'flv',
                 url: STREAM_URL,
                 isLive: true,
                 hasAudio: true,
                 hasVideo: true,
                 cors: true
             }, {
-                // Configuración de Ultra Baja Latencia
+                // --- TUS CONFIGURACIONES ACTUALES ---
                 enableStashBuffer: false,
-                liveBufferLatencyChasing: true, // Característica específica de mpegts
-                liveBufferLatencyMaxLatency: 1.2, // Intentar mantener 1.2s máximo
+                liveBufferLatencyChasing: true,
+                liveBufferLatencyMaxLatency: 1.2,
                 liveBufferLatencyMinRemain: 0.3,
                 lazyLoad: false,
-                autoCleanupSourceBuffer: true
+                
+                // --- NUEVAS CONFIGURACIONES DE MEMORIA ---
+                autoCleanupSourceBuffer: true, // Ya lo tenías, pero es vital
+                autoCleanupMaxBackwardDuration: 10, // (NUEVO) Elimina video más viejo de 10 segundos
+                autoCleanupMinBackwardDuration: 5,  // (NUEVO) Mantén al menos 5 segundos atrás
+                
+                // Opcional: Ayuda si el audio/video se desincronizan y llenan la memoria
+                fixAudioTimestampGap: false, 
             });
 
             player.attachMediaElement(videoElement);
