@@ -24,10 +24,39 @@ export class Router {
     for (const [routePath, handler] of methodRoutes) {
       const params = this.matchPath(routePath, path);
       if (params !== null) {
+        console.log(`🔍 Router: Match found - Route: ${routePath}, Path: ${path}, Params:`, params);
         return { handler, params };
       }
     }
 
+    console.log(`❌ Router: No match found - Method: ${method}, Path: ${path}`);
+    console.log(`📋 Available routes for ${method}:`, Array.from(methodRoutes.keys()));
+    
+    // Debug adicional para entender qué está fallando
+    console.log(`🔍 Debug: Comparando ruta "${path}" con patrones disponibles:`);
+    for (const [routePath, handler] of methodRoutes) {
+      if (routePath.includes(':')) {
+        const params = this.matchPath(routePath, path);
+        console.log(`   - "${routePath}" -> ${params !== null ? 'MATCH' : 'NO MATCH'}`);
+        if (params === null) {
+          // Intentar ver dónde falla la coincidencia
+          const routeParts = routePath.split('/');
+          const pathParts = path.split('/');
+          console.log(`     Route parts: [${routeParts.join(', ')}]`);
+          console.log(`     Path parts: [${pathParts.join(', ')}]`);
+          if (routeParts.length === pathParts.length) {
+            for (let i = 0; i < routeParts.length; i++) {
+              if (routeParts[i] !== pathParts[i] && !routeParts[i].startsWith(':')) {
+                console.log(`     Diferencia en parte ${i}: "${routeParts[i]}" != "${pathParts[i]}"`);
+              }
+            }
+          } else {
+            console.log(`     Diferente número de partes: ${routeParts.length} vs ${pathParts.length}`);
+          }
+        }
+      }
+    }
+    
     return {};
   }
 
@@ -43,8 +72,19 @@ export class Router {
       const routePart = routeParts[i];
       const pathPart = pathParts[i];
 
-      if (routePart.startsWith(':')) {
-        params[routePart.slice(1)] = pathPart;
+      if (routePart.includes(':')) {
+        // Manejar parámetros que están en medio de texto (ej: segment-:sequence)
+        const regex = new RegExp(routePart.replace(/:[^\/]+/, '(.+)'));
+        const match = pathPart.match(regex);
+        
+        if (match) {
+          const paramName = routePart.match(/:([^\/]+)/)?.[1];
+          if (paramName) {
+            params[paramName] = match[1];
+          }
+        } else {
+          return null;
+        }
       } else if (routePart !== pathPart) {
         return null;
       }
@@ -60,8 +100,7 @@ export async function createRouter(): Promise<Router> {
 
   // Importar todos los handlers
   const {
-    healthHandler,
-    rootHandler
+    healthHandler
   } = await import("../handlers/health.js");
 
   const {
@@ -106,8 +145,6 @@ export async function createRouter(): Promise<Router> {
   } = await import("../handlers/hls-memory.js");
 
   // Rutas de salud y estado
-  router.add("GET", "/", rootHandler);
-  router.add("GET", "/index.html", rootHandler);
   router.add("GET", "/health", healthHandler);
 
   // Rutas de configuración
@@ -124,6 +161,7 @@ export async function createRouter(): Promise<Router> {
 
   // Rutas de estado
   router.add("GET", "/api/status", getStatusHandler);
+  router.add("GET", "/hls/status", getMemoryHlsStatus); // Ruta para compatibilidad con frontend
 
   // Rutas HLS (HTTP Callback) - Mantener las existentes por compatibilidad
   router.add("PUT", "/hls_ingest/*", hlsIngestHandler);
@@ -141,7 +179,7 @@ export async function createRouter(): Promise<Router> {
 
   // Rutas HLS en memoria
   router.add("GET", "/hls-memory/playlist.m3u8", serveMemoryPlaylist);
-  router.add("GET", "/hls-memory/segment-:sequence.ts", serveMemorySegment);
+  router.add("GET", "/hls-memory/segment-:sequence", serveMemorySegment);
 
   // Rutas de control HLS en memoria (API REST)
   router.add("POST", "/api/hls-memory/start", startMemoryHls);

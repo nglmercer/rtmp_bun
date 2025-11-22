@@ -1,4 +1,4 @@
-import { HLSMemoryConverter } from "../hls-memory.js";
+import { HLSMemoryConverter, createRealisticSegment } from "../hls-memory.js";
 
 export class HlsMemoryManager {
   private converter: HLSMemoryConverter | null = null;
@@ -144,30 +144,17 @@ export class HlsMemoryManager {
     
     console.log("🎬 Generando segmentos de prueba...");
     
-    // Generar 5 segmentos de prueba
-    for (let i = 0; i < 5; i++) {
-      const testData = this.createMockSegmentData(i, 1024 * 200); // 200KB por segmento
+    // NO generar segmentos de prueba automáticamente
+    // En su lugar, configurar el bitrate para que el sistema RTMP genere segmentos más grandes
+    this.converter.setEstimatedBitrate(1000); // 1000 kbps = 1 Mbps
+    console.log("🎊 Configurado bitrate estimado para generar segmentos más grandes");
+    
+    // Generar solo algunos segmentos iniciales para asegurar que haya contenido
+    for (let i = 0; i < 3; i++) {
+      const testData = createRealisticSegment(i, 4.0); // 4 segundos por segmento
       this.converter.addSegment(i, 4.0, testData);
-      
-      setTimeout(() => {
-        console.log(`📦 Segmento de prueba ${i} añadido`);
-      }, i * 500); // Añadir cada 500ms
+      console.log(`📦 Segmento inicial ${i} añadido (${testData.length} bytes)`);
     }
-  }
-
-  // Crear datos de segmento simulados
-  private createMockSegmentData(sequence: number, size: number): Buffer {
-    const data = Buffer.alloc(size);
-    
-    // Crear un header TS simple (Transport Stream)
-    data[0] = 0x47; // TS Sync byte
-    
-    // Llenar con datos pseudo-aleatorios basados en la secuencia
-    for (let i = 1; i < size; i++) {
-      data[i] = (sequence + i) % 256;
-    }
-    
-    return data;
   }
 }
 

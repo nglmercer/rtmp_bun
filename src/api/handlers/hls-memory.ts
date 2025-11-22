@@ -30,23 +30,32 @@ export const serveMemoryPlaylist: RouteHandler = async (request, context) => {
 // Servir segmentos HLS desde memoria
 export const serveMemorySegment: RouteHandler = async (request, context) => {
   try {
-    const url = new URL(request.url);
-    const pathParts = url.pathname.split('/');
-    const segmentName = pathParts[pathParts.length - 1];
+    // Obtener el parámetro sequence del router
+    const sequence = context?.params?.sequence;
     
-    // Extraer número de secuencia del nombre del segmento (ej: segment-001.ts -> 1)
-    const sequenceMatch = segmentName.match(/segment-(\d+)\.ts/);
-    if (!sequenceMatch) {
-      return ResponseUtils.notFound("Invalid segment format");
+    if (!sequence) {
+      console.log(`❌ No se proporcionó parámetro sequence`);
+      return ResponseUtils.notFound("Missing sequence parameter");
     }
     
-    const sequence = parseInt(sequenceMatch[1]);
-    const segmentData = hlsMemoryManager.getSegment(sequence);
+    // Extraer el número de secuencia del parámetro (que incluye .ts)
+    const sequenceStr = sequence.replace(/\.ts$/, '');
+    const sequenceNum = parseInt(sequenceStr);
+    console.log(`🔍 Solicitando segmento: ${sequence} -> ${sequenceStr} (${sequenceNum})`);
+    
+    // Verificar qué secuencias están disponibles
+    const availableSequences = hlsMemoryManager.getAvailableSequences();
+    console.log(`📋 Secuencias disponibles: [${availableSequences.join(', ')}]`);
+    
+    const segmentData = hlsMemoryManager.getSegment(sequenceNum);
     
     if (!segmentData) {
-      return ResponseUtils.notFound("Segment not found");
+      console.log(`❌ Segmento no encontrado: ${sequenceNum}`);
+      return ResponseUtils.notFound(`Segment ${sequenceNum} not found. Available: [${availableSequences.join(', ')}]`);
     }
 
+    console.log(`✅ Sirviendo segmento ${sequenceNum}: ${segmentData.length} bytes`);
+    
     return new Response(segmentData, {
       status: 200,
       headers: {
@@ -70,6 +79,42 @@ export const startMemoryHls: RouteHandler = async (request, context) => {
     
     console.log("DEBUG: Request content-type:", request.headers.get('content-type'));
     console.log("DEBUG: Request URL:", request.url);
+    
+    // Verificar si ya está corriendo
+    const isCurrentlyRunning = hlsMemoryManager.isRunning();
+    console.log("DEBUG: HLS currently running:", isCurrentlyRunning);
+    
+    if (isCurrentlyRunning) {
+      const currentStreamKey = hlsMemoryManager.getStreamKey();
+      console.log("DEBUG: Current stream key:", currentStreamKey);
+      
+      // Si ya está corriendo, devolver éxito con la información actual
+      const stats = hlsMemoryManager.getStats();
+      const availableSequences = hlsMemoryManager.getAvailableSequences();
+      const bufferInfo = hlsMemoryManager.getBufferInfo();
+      
+      return new Response(JSON.stringify({
+        success: true,
+        message: "HLS conversion is already running",
+        data: {
+          streamKey: currentStreamKey,
+          playlistUrl: "/hls-memory/playlist.m3u8",
+          isAlreadyRunning: true,
+          stats,
+          availableSequences,
+          bufferInfo,
+          segmentCount: availableSequences.length
+        }
+      }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization"
+        }
+      });
+    }
     
     // Parsear body JSON si es una petición POST con content-type application/json
     if (request.method === 'POST' && request.headers.get('content-type')?.includes('application/json')) {
@@ -120,10 +165,42 @@ export const startMemoryHls: RouteHandler = async (request, context) => {
     return ResponseUtils.success("HLS conversion from memory started", {
       streamKey,
       playlistUrl: "/hls-memory/playlist.m3u8",
-      bitrateKbps
+      bitrateKbps,
+      isAlreadyRunning: false
     });
   } catch (error) {
     console.error("Error starting HLS conversion from memory:", error);
+    
+    // Si el error es "already running", devolver un estado más amigable
+    if (error instanceof Error && error.message.includes("already running")) {
+      const currentStreamKey = hlsMemoryManager.getStreamKey();
+      const stats = hlsMemoryManager.getStats();
+      const availableSequences = hlsMemoryManager.getAvailableSequences();
+      const bufferInfo = hlsMemoryManager.getBufferInfo();
+      
+      return new Response(JSON.stringify({
+        success: true,
+        message: "HLS conversion is already running",
+        data: {
+          streamKey: currentStreamKey,
+          playlistUrl: "/hls-memory/playlist.m3u8",
+          isAlreadyRunning: true,
+          stats,
+          availableSequences,
+          bufferInfo,
+          segmentCount: availableSequences.length
+        }
+      }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization"
+        }
+      });
+    }
+    
     return ResponseUtils.serverError(error instanceof Error ? error.message : "Failed to start HLS conversion from memory");
   }
 };

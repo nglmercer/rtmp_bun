@@ -15,38 +15,126 @@
 
     <script>
         var video = document.getElementById('video');
+        var hls = null;
         
         // ---------------------------------------------------------
         // CAMBIA ESTO POR TU URL LOCAL CUANDO TENGAS EL SERVIDOR:/hls-memory/playlist.m3u8
         var videoSrc = 'http://localhost:3000/hls-memory/playlist.m3u8';
         // ---------------------------------------------------------
         //var videoSrc = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'; // URL de prueba pública
-        const status = fetch('http://localhost:3000/hls/status')
 
-        // 3. Lógica de carga
-        if (Hls.isSupported()) {
-            console.log("HLS.js soportado. Iniciando...");
-            var hls = new Hls({
-                debug: true, // Activa logs en la consola (F12) para ver errores
-            });
-            hls.loadSource(videoSrc);
-            hls.attachMedia(video);
-            console.log("Hls.Events.MANIFEST_PARSED",Hls.Events.MANIFEST_PARSED)
-            hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                video.play();
-            });
-            // Manejo básico de errores
-            hls.on(Hls.Events.ERROR, function (event, data) {
-                console.error("Error HLS:", data);
-            });
+        // Función para inicializar HLS.js
+        function initializeHLS() {
+            if (Hls.isSupported()) {
+                console.log("HLS.js soportado. Iniciando...");
+                hls = new Hls({
+                    debug: true, // Activar logs para depuración
+                    enableWorker: true,
+                    lowLatencyMode: false,
+                    backBufferLength: 90,
+                    maxBufferLength: 30,
+                    maxMaxBufferLength: 600,
+                    liveSyncDurationCount: 3,
+                    liveMaxLatencyDurationCount: Infinity,
+                    // Configuración más tolerante a errores
+                    fragLoadingTimeOut: 20000,
+                    fragLoadingMaxRetry: 4,
+                    fragLoadingRetryDelay: 1000,
+                    manifestLoadingTimeOut: 10000,
+                    manifestLoadingMaxRetry: 6,
+                    manifestLoadingRetryDelay: 1000,
+                    levelLoadingTimeOut: 10000,
+                    levelLoadingMaxRetry: 4,
+                    levelLoadingRetryDelay: 1000,
+                });
+                
+                hls.loadSource(videoSrc);
+                hls.attachMedia(video);
+                
+                hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+                    console.log("✅ Playlist cargado, niveles disponibles:", data.levels);
+                    console.log("📊 Iniciando reproducción desde nivel 0");
+                    video.play().catch(e => console.log("Error al reproducir:", e));
+                });
+                
+                hls.on(Hls.Events.LEVEL_SWITCHED, function(event, data) {
+                    console.log("🔄 Cambio de nivel:", data);
+                });
+                
+                hls.on(Hls.Events.FRAG_BUFFERED, function(event, data) {
+                    console.log("📦 Fragmento bufferizado:", data.frag.url);
+                });
+                
+                hls.on(Hls.Events.ERROR, function (event, data) {
+                    console.error("❌ Error HLS:", data);
+                    
+                    // Manejo detallado de errores
+                    if (data.fatal) {
+                        console.error("🚨 Error FATAL:", data.type, data.details);
+                        
+                        switch(data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                console.log("🔄 Error de red fatal, intentando recargar...");
+                                setTimeout(() => {
+                                    if (hls) {
+                                        hls.startLoad();
+                                    }
+                                }, 3000);
+                                break;
+                                
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log("🔄 Error de medio, intentando recuperar...");
+                                setTimeout(() => {
+                                    if (hls) {
+                                        hls.recoverMediaError();
+                                    }
+                                }, 3000);
+                                break;
+                                
+                            default:
+                                console.error("🚨 Error no recuperable, recargando página en 5 segundos...");
+                                setTimeout(() => {
+                                    window.location.reload();
+                                }, 5000);
+                                break;
+                        }
+                    } else {
+                        // Errores no fatales - solo loggear
+                        switch(data.details) {
+                            case Hls.ErrorDetails.FRAG_LOAD_ERROR:
+                                console.warn("⚠️ No se pudo cargar fragmento:", data.frag?.url);
+                                break;
+                            case Hls.ErrorDetails.FRAG_PARSING_ERROR:
+                                console.warn("⚠️ Error parseando fragmento:", data.frag?.url, data.reason);
+                                break;
+                            case Hls.ErrorDetails.BUFFER_STALLED_ERROR:
+                                console.warn("⚠️ Buffer stalled, esperando datos...");
+                                break;
+                            case Hls.ErrorDetails.BUFFER_SEEK_OVER_HOLE:
+                                console.warn("⚠️ Seek sobre hueco en buffer:", data.reason);
+                                break;
+                            default:
+                                console.warn("⚠️ Error no fatal:", data.details);
+                                break;
+                        }
+                    }
+                });
 
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            // Fallback para Safari (Soporte nativo)
-            video.src = videoSrc;
-            video.addEventListener('loadedmetadata', function() {
-                video.play();
-            });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Fallback para Safari (Soporte nativo)
+                console.log("🍎 Usando soporte nativo HLS de Safari");
+                video.src = videoSrc;
+                video.addEventListener('loadedmetadata', function() {
+                    video.play();
+                });
+            } else {
+                console.error("❌ HLS no es soportado en este navegador");
+            }
         }
+
+        // NO inicializar HLS.js inmediatamente
+        // Esperaremos a que el servidor HLS esté listo
+        console.log("⏳ Esperando a que el servidor HLS esté listo...");
 
         // Script para probar la API HLS en memoria
         const baseURL = 'http://localhost:3000';
@@ -63,32 +151,42 @@
                 
                 // 2. Iniciar HLS (o verificar si ya está corriendo)
                 console.log('\n2️⃣ Iniciando HLS...');
+                let hlsStartedSuccessfully = false;
+                
                 try {
-                    // Primero verificar si ya está corriendo
+                    // Verificar estado actual primero
                     const statusCheck = await fetch(`${baseURL}/api/hls-memory/status`);
                     const statusData = await statusCheck.json();
                     
                     if (statusData.success && statusData.data.isRunning) {
-                        console.log('ℹ️ HLS ya está corriendo, deteniendo primero...');
-                        await fetch(`${baseURL}/api/hls-memory/stop`, { method: 'POST' });
-                        await new Promise(resolve => setTimeout(resolve, 1000)); // Esperar 1 segundo
-                    }
-                    
-                    const startResponse = await fetch(`${baseURL}/api/hls-memory/start`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ streamKey: 'test123' })
-                    });
-                    
-                    console.log('Response status:', startResponse.status);
-                    const startResult = await startResponse.json();
-                    console.log('Resultado inicio:', JSON.stringify(startResult, null, 2));
-                    
-                    if (!startResponse.ok) {
-                        console.log('⚠️ HLS ya estaba corriendo o no se pudo iniciar:', startResult.message);
+                        console.log('ℹ️ HLS ya está corriendo, usando el stream existente');
+                        hlsStartedSuccessfully = true;
+                    } else {
+                        console.log('🎬 Iniciando nuevo stream HLS...');
+                        const startResponse = await fetch(`${baseURL}/api/hls-memory/start`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ streamKey: 'test123' })
+                        });
+                        
+                        console.log('Response status:', startResponse.status);
+                        const startResult = await startResponse.json();
+                        console.log('Resultado inicio:', JSON.stringify(startResult, null, 2));
+                        
+                        if (startResponse.ok) {
+                            hlsStartedSuccessfully = true;
+                            console.log('✅ HLS iniciado correctamente');
+                            
+                            // Si ya estaba corriendo, indicarlo
+                            if (startResult.data && startResult.data.isAlreadyRunning) {
+                                console.log('ℹ️ El stream HLS ya estaba activo');
+                            }
+                        } else {
+                            console.log('⚠️ No se pudo iniciar HLS:', startResult.message || 'Error desconocido');
+                        }
                     }
                 } catch (error) {
-                    console.log('⚠️ Error al iniciar HLS (puede que ya esté corriendo):', error.message);
+                    console.log('⚠️ Error al verificar/iniciar HLS:', error.message);
                 }
                 
                 // 3. Esperar un momento y verificar estado
@@ -109,6 +207,15 @@
                     const playlistText = await playlistResponse.text();
                     console.log('Playlist content (primeras líneas):');
                     console.log(playlistText.split('\n').slice(0, 10).join('\n'));
+                    
+                    // Si el playlist está disponible y HLS no está inicializado, inicializarlo ahora
+                    if (hlsStartedSuccessfully && !hls) {
+                        console.log('🎬 Inicializando HLS.js ahora que el servidor está listo...');
+                        initializeHLS();
+                    } else if (hlsStartedSuccessfully && hls) {
+                        console.log('🔄 HLS.js ya está inicializado, recargando fuente...');
+                        hls.loadSource(videoSrc);
+                    }
                 } else {
                     console.log('Error cargando playlist:', await playlistResponse.text());
                 }
@@ -121,15 +228,17 @@
                     console.log('Archivos en memoria:', JSON.stringify(debugFiles, null, 2));
                 }
                 
-                // 7. Detener HLS
+                // 7. Detener HLS (COMENTADO para mantener stream activo)
+                /*
                 console.log('\n7️⃣ Deteniendo HLS...');
                 const stopResponse = await fetch(`${baseURL}/api/hls-memory/stop`, {
                     method: 'POST'
                 });
                 const stopResult = await stopResponse.json();
                 console.log('Resultado detener:', JSON.stringify(stopResult, null, 2));
+                */
                 
-                console.log('\n✅ Pruebas completadas!');
+                console.log('\n✅ Pruebas completadas! Stream HLS activo para reproducción continua.');
                 
             } catch (error) {
                 console.error('\n❌ Error en las pruebas:', error.message);

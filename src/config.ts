@@ -11,7 +11,7 @@ export interface ServerConfig {
   chunkSize: number;
   windowAckSize: number;
   peerBandwidth: number;
-  logLevel: "debug" | "info" | "warn" | "error";
+  logLevel: "debug" | "info" | "warn" | "error"| string;
   logFile: string;
   enableRestApi: boolean;
   restApiPort: number;
