@@ -2,8 +2,9 @@ import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { cors } from "hono/cors";
 // Asegúrate de importar tu clase RTMPServer correctamente
-import { RTMPServer } from "./rtmp-server"; 
+import { RTMPServer } from "./rtmp-server";
 import { ramStore } from "./hls-store";
+import { TestStreamGenerator, createTestStream } from "./test-stream-generator";
 
 const PORT = 3000;
 const app = new Hono();
@@ -77,13 +78,85 @@ app.get("/live/:streamKey/:filename", (c) => {
   });
 });
 
+// -----------------------------------------------------------------------
+// C. RUTAS DE DIAGNÓSTICO Y TESTING
+// -----------------------------------------------------------------------
+
+// Ruta de diagnóstico para verificar el estado del sistema
+app.get("/debug/status", (c) => {
+  const stats = ramStore.getStats();
+  
+  // Verificar si hay archivos para el stream "default" como ejemplo
+  const defaultPlaylist = ramStore.getFile("default", "playlist.m3u8");
+  const defaultPreview = ramStore.getFile("default", "preview.jpg");
+  
+  // Contar segmentos .ts para el stream default (los primeros 10 para no sobrecargar)
+  let segmentCount = 0;
+  for (let i = 0; i < 10; i++) {
+    const segmentName = `segment_${String(i).padStart(5, '0')}.ts`;
+    if (ramStore.getFile("default", segmentName)) {
+      segmentCount++;
+    }
+  }
+
+  return c.json({
+    status: "running",
+    memory: stats,
+    defaultStream: {
+      hasPlaylist: !!defaultPlaylist,
+      hasPreview: !!defaultPreview,
+      segmentCount: segmentCount,
+      playlistSize: defaultPlaylist?.size || 0
+    },
+    timestamp: new Date().toISOString(),
+    message: "Para iniciar un stream de prueba, haz POST a /debug/start-test-stream/default"
+  });
+});
+
+// Ruta para iniciar un stream de prueba
+app.post("/debug/start-test-stream/:streamKey?", async (c) => {
+  const streamKey = c.req.param("streamKey") || "default";
+  
+  try {
+    await createTestStream(streamKey);
+    return c.json({
+      success: true,
+      message: `Stream de prueba iniciado para: ${streamKey}`,
+      playlistUrl: `/live/${streamKey}/playlist.m3u8`
+    });
+  } catch (error: any) {
+    return c.json({
+      success: false,
+      error: error.message
+    }, 500);
+  }
+});
+
 // Servir frontend si lo tienes
-app.use('*', serveStatic({ 
+app.use('*', serveStatic({
   root: './public',
   rewriteRequestPath: (path) => path.replace(/^\/public/, '/'),
 }));
 
 console.log(`🚀 Servidor HTTP/HLS corriendo en http://localhost:${PORT}`);
+console.log(`📊 Diagnóstico disponible en: http://localhost:${PORT}/debug/status`);
+console.log(`🧪 Para iniciar stream de prueba: POST http://localhost:${PORT}/debug/start-test-stream/default`);
+
+// Opcional: Iniciar stream de prueba automáticamente si no hay streams activos
+setTimeout(async () => {
+  const stats = ramStore.getStats();
+  if (stats.totalStreams === 0) {
+    console.log(`🔍 No se detectaron streams activos, iniciando stream de prueba...`);
+    try {
+      await createTestStream("default");
+      console.log(`✅ Stream de prueba iniciado. Visita: http://localhost:${PORT}/live/default/playlist.m3u8`);
+    } catch (error) {
+      console.error(`❌ No se pudo iniciar stream de prueba:`, error);
+      console.log(`💡 Para iniciar manualmente: curl -X POST http://localhost:${PORT}/debug/start-test-stream/default`);
+    }
+  }
+}, 2000); // Esperar 2 segundos a que el servidor se inicie completamente
+
 const rtmpServer = new RTMPServer(1935);
 
 // Exportar para Bun

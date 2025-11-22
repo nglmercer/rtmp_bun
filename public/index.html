@@ -17,7 +17,7 @@
         var video = document.getElementById('video');
         
         // ---------------------------------------------------------
-        var videoSrc = 'http://localhost:3000/live/default/index.m3u8';
+        var videoSrc = 'http://localhost:3000/live/default/playlist.m3u8';
         // ---------------------------------------------------------
         //var videoSrc = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'; // URL de prueba pública
 
@@ -25,24 +25,65 @@
         if (Hls.isSupported()) {
             console.log("HLS.js soportado. Iniciando...");
             var hls = new Hls({
-                debug: false, // Activa logs en la consola (F12) para ver errores
+                debug: true, // Activar logs para depuración
+                enableWorker: true,
+                lowLatencyMode: true,
+                backBufferLength: 90
             });
+            
             hls.loadSource(videoSrc);
             hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                video.play();
+            
+            hls.on(Hls.Events.MEDIA_ATTACHED, function() {
+                console.log("Media adjuntado al reproductor");
             });
-            // Manejo básico de errores
+            
+            hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+                console.log("Playlist parseada, niveles disponibles:", data.levels);
+                console.log("Iniciando reproducción...");
+                video.play().catch(e => console.error("Error al iniciar reproducción:", e));
+            });
+            
+            hls.on(Hls.Events.LEVEL_LOADED, function(event, data) {
+                console.log("Nivel cargado:", data.level, "fragmentos:", data.details.fragments.length);
+            });
+            
+            hls.on(Hls.Events.FRAG_LOADED, function(event, data) {
+                console.log("Fragmento cargado:", data.frag.url);
+            });
+            
+            // Manejo detallado de errores
             hls.on(Hls.Events.ERROR, function (event, data) {
                 console.error("Error HLS:", data);
+                console.error("Tipo:", data.type, "Detalles:", data.details);
+                
+                if (data.fatal) {
+                    switch(data.type) {
+                        case Hls.ErrorTypes.NETWORK_ERROR:
+                            console.error("Error de red - reintentando...");
+                            hls.startLoad();
+                            break;
+                        case Hls.ErrorTypes.MEDIA_ERROR:
+                            console.error("Error de medios - recuperando...");
+                            hls.recoverMediaError();
+                            break;
+                        default:
+                            console.error("Error fatal - no se puede recuperar");
+                            break;
+                    }
+                }
             });
 
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
             // Fallback para Safari (Soporte nativo)
+            console.log("Usando soporte nativo de Safari");
             video.src = videoSrc;
             video.addEventListener('loadedmetadata', function() {
-                video.play();
+                console.log("Metadata cargada, iniciando reproducción");
+                video.play().catch(e => console.error("Error al iniciar reproducción:", e));
             });
+        } else {
+            console.error("HLS no soportado en este navegador");
         }
     </script>
 </body>

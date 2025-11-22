@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawn, ChildProcess } from 'node:child_process';
 import { ramStore } from './hls-store';
+import { GStreamerFix } from './gstreamer-fix';
 
 export class GstTranscoder {
   private process: ChildProcess | null = null;
@@ -9,6 +10,9 @@ export class GstTranscoder {
   private tempDir: string;
   private watcher: fs.FSWatcher | null = null;
   private gstPath: string;
+  private isUsingFallback: boolean = false;
+  private retryCount: number = 0;
+  private maxRetries: number = 1;
 
   constructor(streamKey: string, customGstPath?: string) {
     this.streamKey = streamKey;
@@ -27,55 +31,24 @@ export class GstTranscoder {
 
   async start() {
     console.log(`[Transcoder] 🎬 Iniciando Pipeline para: ${this.streamKey}`);
+    
+    try {
+      // Check GStreamer installation first
+      await GStreamerFix.installPlugins();
+    } catch (error) {
+      console.error(`[Transcoder] ❌ GStreamer check failed:`, error);
+      throw error;
+    }
+    
     this.ensureDirectory();
     
-    // GStreamer on Windows requires forward slashes for paths in arguments
-    const tempDirPosix = this.tempDir.split(path.sep).join('/').replace(/\\/g, '/');
+    // Try the fixed pipeline first, fallback if needed
+    let args = this.isUsingFallback
+      ? GStreamerFix.getFallbackPipeline(this.streamKey, this.tempDir)
+      : GStreamerFix.getFixedPipeline(this.streamKey, this.tempDir);
+    let pipelineType = this.isUsingFallback ? "FALLBACK" : "PRIMARY";
 
-    const args = [
-      // 1. SOURCE & DEMUX
-      'fdsrc', 'fd=0', 
-      '!', 'flvdemux', 'name=demux',
-
-      // 2. VIDEO BRANCH -> MUXER
-      'demux.video', 
-      '!', 'queue', 'silent=true', 'leaky=1',
-      '!', 'h264parse',
-      '!', 'decodebin',
-      '!', 'videoconvert',
-      '!', 'video/x-raw,format=I420',
-      '!', 'x264enc',
-          'tune=zerolatency',
-          'speed-preset=ultrafast',
-          'bitrate=2500',
-          'key-int-max=60',
-          'threads=4',
-      '!', 'h264parse',
-      '!', 'mux.', // Connect to Muxer named 'mux'
-
-      // 3. AUDIO BRANCH -> MUXER
-      'demux.audio',
-      '!', 'queue', 'silent=true', 'leaky=1',
-      '!', 'aacparse',
-      '!', 'decodebin',
-      '!', 'audioconvert',
-      '!', 'audioresample',
-      '!', 'avenc_aac', 'bitrate=128000',
-      '!', 'aacparse',
-      '!', 'mux.', // Connect to Muxer named 'mux'
-      
-      // 4. MUXER DEFINITION & SINK
-      'mpegtsmux', 'name=mux',
-      '!', 'queue', 'silent=true',
-      '!', 'hlssink2',
-          `location=${tempDirPosix}/segment_%05d.ts`,
-          `playlist-location=${tempDirPosix}/playlist.m3u8`,
-          'target-duration=2',
-          'max-files=10',
-          'playlist-length=6'
-    ];
-
-    console.log(`\n[GST DEBUG] Pipeline Command:`);
+    console.log(`\n[GST DEBUG] ${pipelineType} Pipeline Command:`);
     console.log(`"${this.gstPath}" ${args.join(' ')}\n`);
 
     try {
@@ -91,7 +64,8 @@ export class GstTranscoder {
       
       const env: NodeJS.ProcessEnv = {
         ...process.env,
-        GST_DEBUG: '3'
+        GST_DEBUG: '2', // Reducir verbosidad para ver solo errores importantes
+        GST_DEBUG_NO_COLOR: '1' // Para mejor legibilidad en logs
       };
 
       if (gstPluginPath) {
@@ -110,7 +84,20 @@ export class GstTranscoder {
 
       this.process.on('exit', (code) => {
         if (code !== null && code !== 0 && code !== 15) {
-           console.error(`[Transcoder] ⚠️ GStreamer terminó con código: ${code}`);
+           console.error(`[Transcoder] ⚠️ ${pipelineType} GStreamer terminó con código: ${code}`);
+           
+           // Try fallback pipeline if primary failed and we haven't tried it yet
+           if (!this.isUsingFallback && this.retryCount < this.maxRetries) {
+             console.log(`[Transcoder] 🔄 Attempting fallback pipeline...`);
+             this.isUsingFallback = true;
+             this.retryCount++;
+             
+             // Restart with fallback after a short delay
+             setTimeout(() => {
+               this.start();
+             }, 1000);
+             return;
+           }
         }
         this.stop();
       });
@@ -118,9 +105,35 @@ export class GstTranscoder {
       if (this.process.stderr) {
         this.process.stderr.on('data', (data) => {
           const msg = data.toString().trim();
-          // Filter out common info noise, keep warnings/errors
-          if (msg && (msg.includes('WARN') || msg.includes('ERROR') || msg.includes('erroneous'))) {
-             console.error(`[GST LOG] ${msg}`);
+          // Filtrar para mostrar solo errores críticos y warnings importantes
+          if (msg) {
+            // Ignorar algunos warnings comunes que no son críticos
+            const ignorePatterns = [
+              /couldn't find fd/,
+              /GST_POLL/,
+              /Delayed linking failed/  // Ya manejamos esto con caps explícitos
+            ];
+            
+            const shouldIgnore = ignorePatterns.some(pattern => pattern.test(msg));
+            
+            if (!shouldIgnore && (msg.includes('WARN') || msg.includes('ERROR') || msg.includes('refused caps') || msg.includes('not-negotiated'))) {
+               console.error(`[GST LOG] ${msg}`);
+               
+               // Detectar errores críticos que requieran fallback
+               if (msg.includes('refused caps') || msg.includes('not-negotiated') || msg.includes('not-linked')) {
+                 console.log(`[Transcoder] 🚨 Critical error detected, will trigger fallback if needed`);
+               }
+            }
+          }
+        });
+      }
+
+      // Add stdout monitoring for additional debugging
+      if (this.process.stdout) {
+        this.process.stdout.on('data', (data) => {
+          const msg = data.toString().trim();
+          if (msg) {
+            console.log(`[GST STDOUT] ${msg}`);
           }
         });
       }
@@ -135,6 +148,29 @@ export class GstTranscoder {
   write(data: Buffer) {
     if (this.process?.stdin?.writable && !this.process.killed) {
       try {
+        // Validate FLV data before writing
+        if (data.length > 0) {
+          // Log first few bytes for debugging
+          if (data.length >= 13) {
+            const header = data.subarray(0, 13);
+            const flvSignature = header.toString('utf8', 0, 3);
+            
+            if (flvSignature === 'FLV') {
+              console.log(`[Transcoder] 📄 FLV header detected: ${header.toString('hex')}`);
+            } else {
+              // Check if it's an FLV tag
+              const tagType = data[0];
+              if (tagType === 8 || tagType === 9 || tagType === 18) {
+                const dataSize = data.readUIntBE(1, 3);
+                const timestamp = data.readUIntBE(4, 3) | (data[7] << 24);
+                //console.log(`[Transcoder] 🏷️  FLV tag: type=${tagType} (${this.getTagTypeName(tagType)}), size=${dataSize}, ts=${timestamp}`);
+              } else {
+                console.warn(`[Transcoder] ⚠️  Unknown data type: 0x${tagType.toString(16)}`);
+              }
+            }
+          }
+        }
+        
         this.process.stdin.write(data);
       } catch (err) {
         // Ignore EPIPE (pipe closed) errors as they happen during shutdown
@@ -142,6 +178,15 @@ export class GstTranscoder {
           console.error('[Transcoder] Error escribiendo:', err);
         }
       }
+    }
+  }
+
+  private getTagTypeName(tagType: number): string {
+    switch (tagType) {
+      case 8: return 'Audio';
+      case 9: return 'Video';
+      case 18: return 'Script';
+      default: return `Unknown(${tagType})`;
     }
   }
 
@@ -162,16 +207,30 @@ export class GstTranscoder {
       this.process = null;
     }
 
-    // Cleanup temp files after a short delay to ensure handles are released
+    // Cleanup temp files after a longer delay to ensure handles are released
     setTimeout(() => {
         try {
             if (fs.existsSync(this.tempDir)) {
-                fs.rmSync(this.tempDir, { recursive: true, force: true });
+                // Try multiple times with increasing delays
+                const cleanupWithRetry = (attempt: number) => {
+                    try {
+                        fs.rmSync(this.tempDir, { recursive: true, force: true });
+                        console.log(`[Transcoder] ✅ Cleanup successful on attempt ${attempt}`);
+                    } catch (e) {
+                        if (attempt < 3) {
+                            console.log(`[Transcoder] ⏳ Cleanup retry ${attempt}/3...`);
+                            setTimeout(() => cleanupWithRetry(attempt + 1), 2000 * attempt);
+                        } else {
+                            console.error('[Transcoder] ❌ Cleanup failed after 3 attempts:', e);
+                        }
+                    }
+                };
+                cleanupWithRetry(1);
             }
-        } catch (e) { 
-            console.error('[Transcoder] Cleanup warning:', e);
+        } catch (e) {
+            console.error('[Transcoder] Cleanup error:', e);
         }
-    }, 1500);
+    }, 3000);
   }
 
   private ensureDirectory() {
