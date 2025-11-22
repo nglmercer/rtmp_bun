@@ -60,11 +60,16 @@ app.get("/live/:streamKey/:filename", (c) => {
     return c.notFound();
   }
 
-  // Headers importantes para baja latencia
   c.header("Content-Type", file.contentType);
   c.header("Cache-Control", "no-cache, no-store, must-revalidate");
   
-  return c.body(file.buffer);
+  // --- CORRECCIÓN AQUÍ ---
+  // Opción 1: Forzar el tipo (más rápido)
+  //return c.body(file.buffer as any); 
+  
+  return new Response(file.buffer, {
+    headers: c.res.headers
+  });
 });
 
 // 3. Servir archivos estáticos normales (tu frontend, player, etc)
