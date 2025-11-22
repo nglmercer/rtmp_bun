@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Visor RTMP - Default</title>
+    <title>Visor RTMP - Enhanced (HEVC/AV1)</title>
     <style>
         body {
             background: #000;
@@ -17,15 +17,15 @@
         video {
             width: 100%;
             height: 100%;
-            max-width: 1280px; /* Ajusta según prefieras */
-            object-fit: contain; /* Mantiene la proporción */
+            max-width: 1280px;
+            object-fit: contain;
         }
         #status {
             position: absolute;
             top: 20px;
             left: 20px;
             background: rgba(0, 0, 0, 0.7);
-            color: #0f0; /* Verde hacker */
+            color: #0f0;
             padding: 5px 10px;
             border-radius: 4px;
             pointer-events: none;
@@ -34,18 +34,18 @@
         #status.error { color: #f00; }
         #status.waiting { color: #ff0; }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/flv.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
 </head>
 <body>
 
-    <div id="status">Iniciando...</div>
+    <div id="status">Iniciando motor MPEGTS...</div>
     <video id="videoElement" controls autoplay muted></video>
 
     <script>
         const STREAM_URL = 'http://localhost:3000/live/default.flv';
         const videoElement = document.getElementById('videoElement');
         const statusElement = document.getElementById('status');
-        let flvPlayer = null;
+        let player = null;
         let retryTimer = null;
 
         function showStatus(msg, type = 'normal') {
@@ -54,57 +54,68 @@
         }
 
         function initPlayer() {
-            if (!flvjs.isSupported()) {
-                showStatus('FLV.js no soportado', 'error');
+            // 1. Verificación de soporte mejorada
+            if (!mpegts.getFeatureList().mseLivePlayback) {
+                showStatus('Tu navegador no soporta MSE Live', 'error');
                 return;
             }
 
-            if (flvPlayer) {
+            if (player) {
                 destroyPlayer();
             }
 
             showStatus('Conectando...', 'waiting');
 
-            flvPlayer = flvjs.createPlayer({
-                type: 'flv',
+            // 2. Creación del player usando mpegts
+            player = mpegts.createPlayer({
+                type: 'flv',  // mpegts maneja flv sobre http igual que flv.js
                 url: STREAM_URL,
                 isLive: true,
                 hasAudio: true,
                 hasVideo: true,
                 cors: true
             }, {
-                // Configuración de baja latencia
+                // Configuración de Ultra Baja Latencia
                 enableStashBuffer: false,
+                liveBufferLatencyChasing: true, // Característica específica de mpegts
+                liveBufferLatencyMaxLatency: 1.2, // Intentar mantener 1.2s máximo
+                liveBufferLatencyMinRemain: 0.3,
                 lazyLoad: false,
                 autoCleanupSourceBuffer: true
             });
 
-            flvPlayer.attachMediaElement(videoElement);
+            player.attachMediaElement(videoElement);
 
-            flvPlayer.on(flvjs.Events.LOADING_COMPLETE, () => {
+            // Eventos (La API es idéntica a flv.js)
+            player.on(mpegts.Events.LOADING_COMPLETE, () => {
                 showStatus('Stream terminado (reiniciando...)', 'waiting');
                 retryConnection();
             });
 
-            flvPlayer.on(flvjs.Events.ERROR, (errType, errDetail) => {
-                console.log('Error FLV:', errType, errDetail);
-                // Si es error de red (servidor apagado o stream no listo), reintentamos
-                if (errType === flvjs.ErrorTypes.NETWORK_ERROR) {
+            player.on(mpegts.Events.ERROR, (errType, errDetail) => {
+                console.log('Error Player:', errType, errDetail);
+                if (errType === mpegts.ErrorTypes.NETWORK_ERROR) {
                     showStatus('Esperando Stream...', 'waiting');
                     retryConnection();
+                } else if (errType === mpegts.ErrorTypes.MEDIA_ERROR) {
+                     // Si falla la decodificación (ej. codec no soportado por hardware)
+                     if(errDetail.includes('CodecUnsupported')) {
+                        showStatus('Error: Codec no soportado por HW', 'error');
+                     } else {
+                        retryConnection();
+                    }
                 }
             });
 
-            flvPlayer.on(flvjs.Events.MEDIA_INFO, () => {
-                showStatus('EN VIVO', 'normal');
+            player.on(mpegts.Events.MEDIA_INFO, () => {
+                showStatus('EN VIVO (Enhanced)', 'normal');
             });
 
             try {
-                flvPlayer.load();
-                flvPlayer.play().catch(e => {
-                    // Chrome bloquea autoplay con sonido.
-                    console.warn("Autoplay bloqueado, el usuario debe interactuar:", e);
-                    showStatus('Click para reproducir (Audio bloqueado)', 'waiting');
+                player.load();
+                player.play().catch(e => {
+                    console.warn("Autoplay bloqueado:", e);
+                    showStatus('Click para reproducir', 'waiting');
                 });
             } catch (e) {
                 retryConnection();
@@ -112,26 +123,24 @@
         }
 
         function destroyPlayer() {
-            if (flvPlayer) {
-                flvPlayer.pause();
-                flvPlayer.unload();
-                flvPlayer.detachMediaElement();
-                flvPlayer.destroy();
-                flvPlayer = null;
+            if (player) {
+                player.pause();
+                player.unload();
+                player.detachMediaElement();
+                player.destroy();
+                player = null;
             }
         }
 
         function retryConnection() {
             if (retryTimer) clearTimeout(retryTimer);
             destroyPlayer();
-            // Reintentar en 3 segundos
             retryTimer = setTimeout(() => {
                 console.log("Reintentando conexión...");
                 initPlayer();
             }, 3000);
         }
 
-        // Iniciar al cargar
         document.addEventListener('DOMContentLoaded', initPlayer);
 
     </script>
