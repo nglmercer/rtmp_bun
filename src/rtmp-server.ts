@@ -1,6 +1,6 @@
 import { writeFileSync, appendFileSync } from "node:fs";
 // import { hlsMemoryManager } from "./api/hls-memory-manager.js"; // ELIMINADO
-import { FFmpegTranscoder } from "./transcoder"; // NUEVO
+import { GstTranscoder } from "./transcoder";
 import { FLVWrapper } from "./flv-utils";        // NUEVO
 
 interface StreamStats {
@@ -266,7 +266,7 @@ class RTMPConnection {
   private isReconnection: boolean = false;
   
   // 🔥 Transcoder Instance
-  private transcoder: FFmpegTranscoder | null = null;
+  private transcoder: GstTranscoder | null = null;
 
   private incompleteMessages: Map<
     number,
@@ -972,7 +972,7 @@ class RTMPConnection {
             this.transcoder.stop();
         }
         
-        this.transcoder = new FFmpegTranscoder(streamKey);
+        this.transcoder = new GstTranscoder(streamKey);
         this.transcoder.start();
         
         // Enviar cabecera FLV requerida por FFmpeg

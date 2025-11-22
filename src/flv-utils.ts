@@ -1,39 +1,66 @@
 import { Buffer } from "node:buffer";
 
+// flv-utils.ts
 export class FLVWrapper {
-  // Genera la cabecera del archivo FLV
+  /**
+   * Genera la cabecera inicial del archivo FLV.
+   * GStreamer necesita esto como los primeros bytes para reconocer el formato.
+   */
   static getHeader(): Buffer {
-    return Buffer.from([
-      0x46, 0x4c, 0x56, // 'F', 'L', 'V'
-      0x01,             // Version 1
-      0x05,             // Flags: Audio (0x04) + Video (0x01) = 0x05
-      0x00, 0x00, 0x00, 0x09, // DataOffset (9 bytes)
-      0x00, 0x00, 0x00, 0x00  // PreviousTagSize 0
-    ]);
+    const header = Buffer.alloc(13);
+
+    // 'F', 'L', 'V'
+    header.write('FLV');
+    
+    // Versión 1
+    header[3] = 1;
+    
+    // Flags: Audio (4) + Video (1) = 5
+    header[4] = 5; 
+    
+    // DataOffset: Tamaño de la cabecera (9)
+    header.writeUInt32BE(9, 5);
+    
+    // PreviousTagSize0: Siempre 0 después de la cabecera
+    header.writeUInt32BE(0, 9);
+
+    return header;
   }
 
-  // Envuelve un paquete de Audio/Video en un Tag FLV
-  static wrapTag(type: number, timestamp: number, data: Buffer, streamId: number = 0): Buffer {
-    const tagHeader = Buffer.alloc(11);
+  /**
+   * Envuelve el payload de Audio/Video en un TAG FLV Estándar.
+   * @param type 8 para Audio, 9 para Video, 18 para Data
+   * @param timestamp Tiempo absoluto en ms
+   * @param data El payload crudo (H.264 o AAC packet)
+   */
+  static wrapTag(type: number, timestamp: number, data: Buffer): Buffer {
+    const dataSize = data.length;
+    const totalSize = 11 + dataSize + 4; // Header (11) + Data + PreviousTagSize (4)
     
-    // Tag Type (8: Audio, 9: Video, 18: Script/Data)
-    tagHeader.writeUInt8(type, 0);
-    
-    // Data Size (3 bytes)
-    tagHeader.writeUIntBE(data.length, 1, 3);
-    
-    // Timestamp (3 bytes + 1 byte extended)
-    // FLV usa un formato raro donde el byte más alto va al final
-    tagHeader.writeUIntBE(timestamp & 0xffffff, 4, 3);
-    tagHeader.writeUInt8((timestamp >> 24) & 0xff, 7);
-    
-    // Stream ID (3 bytes, siempre 0)
-    tagHeader.writeUIntBE(0, 8, 3);
+    const buffer = Buffer.alloc(totalSize);
 
-    // PreviousTagSize (4 bytes al final del tag para navegación hacia atrás)
-    const prevTagSize = Buffer.alloc(4);
-    prevTagSize.writeUInt32BE(11 + data.length, 0);
+    // 1. Tag Type
+    buffer[0] = type;
 
-    return Buffer.concat([tagHeader, data, prevTagSize]);
+    // 2. Data Size (3 bytes)
+    buffer.writeUIntBE(dataSize, 1, 3);
+
+    // 3. Timestamp (3 bytes + 1 byte extendido)
+    // Los 24 bits bajos
+    buffer.writeUIntBE(timestamp & 0xffffff, 4, 3);
+    // El byte alto (Timestamp Extended)
+    buffer[7] = (timestamp >> 24) & 0xff;
+
+    // 4. StreamID (3 bytes) - Siempre 0
+    buffer.writeUIntBE(0, 8, 3);
+
+    // 5. Payload Data
+    data.copy(buffer, 11);
+
+    // 6. PreviousTagSize (4 bytes) al final
+    // Es el tamaño del Tag anterior (header + data)
+    buffer.writeUInt32BE(11 + dataSize, 11 + dataSize);
+
+    return buffer;
   }
 }

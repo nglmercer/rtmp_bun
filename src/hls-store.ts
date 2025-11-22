@@ -1,6 +1,6 @@
-// Tipos para definir qué guardamos
-type FileRecord = {
-  data: Uint8Array; // Uint8Array es más ligero que Buffer en Bun
+// Tipos para definir la estructura de los archivos en memoria
+export type FileRecord = {
+  data: Uint8Array; // Uint8Array es más eficiente en memoria que Buffer
   contentType: string;
   size: number;
   updatedAt: number;
@@ -8,9 +8,9 @@ type FileRecord = {
 
 type StreamContext = {
   lastActivity: number;
-  playlist: FileRecord | null;   // Solo hay 1 .m3u8 activo a la vez
-  preview: FileRecord | null;    // Solo hay 1 .jpg activo a la vez
-  segments: Map<string, FileRecord>; // Múltiples .ts
+  playlist: FileRecord | null;    // index.m3u8 (solo uno activo)
+  preview: FileRecord | null;     // preview.jpg (solo uno activo)
+  segments: Map<string, FileRecord>; // segmentos .ts (múltiples)
 };
 
 export class HlsRamStore {
@@ -20,27 +20,28 @@ export class HlsRamStore {
   // Estadísticas globales
   private currentTotalSize = 0;
   
-  // Configuración
+  // Configuración (Ajustable)
   private readonly MAX_TOTAL_RAM = 512 * 1024 * 1024; // 512 MB Límite duro
-  private readonly MAX_SEGMENT_AGE = 60000; // 60s vida útil (fallback)
-  private readonly MAX_STREAM_IDLE = 120000; // 2 min sin actividad = stream muerto
+  private readonly MAX_SEGMENT_AGE = 60000; // 60s vida útil para segmentos viejos
+  private readonly MAX_STREAM_IDLE = 120000; // 2 min sin actividad = stream eliminado
   
   constructor() {
-    // Limpieza cada 10s (más frecuente pero más ligera)
+    // Limpieza automática cada 10 segundos
     setInterval(() => this.gc(), 10000);
   }
 
   /**
    * Guarda o actualiza un archivo en memoria
    */
-  saveFile(streamKey: string, filename: string, data: ArrayBuffer, contentType: string): boolean {
+  saveFile(streamKey: string, filename: string, data: Buffer | ArrayBuffer, contentType: string): boolean {
     const size = data.byteLength;
 
     // 1. Protección de Memoria Global
     if (this.currentTotalSize + size > this.MAX_TOTAL_RAM) {
-      console.error(`[RAM] ⚠️ Memoria llena. Rechazando escritura para ${streamKey}`);
-      // Aquí podrías implementar una lógica de "Evicción de Emergencia" si quisieras
-      return false; 
+      console.warn(`[RAM] ⚠️ Memoria llena (${this.getStats().memoryUsageMB} MB). Rechazando escritura para ${streamKey}/${filename}`);
+      // Opcional: Forzar un GC de emergencia aquí
+      this.gc();
+      if (this.currentTotalSize + size > this.MAX_TOTAL_RAM) return false;
     }
 
     // 2. Obtener o crear contexto del stream
@@ -56,6 +57,8 @@ export class HlsRamStore {
     }
 
     ctx.lastActivity = Date.now();
+    
+    // Convertir a Uint8Array para consistencia
     const fileRecord: FileRecord = {
       data: new Uint8Array(data),
       contentType,
@@ -63,39 +66,39 @@ export class HlsRamStore {
       updatedAt: Date.now()
     };
 
-    // 3. Guardado Inteligente (Evita duplicados en RAM)
+    // 3. Guardado Inteligente (Gestión de Memoria)
     if (filename.endsWith('.m3u8')) {
-      // Si ya existía, restamos su peso anterior antes de sobrescribir
+      // Si existe una playlist previa, liberar su espacio
       if (ctx.playlist) this.currentTotalSize -= ctx.playlist.size;
       ctx.playlist = fileRecord;
     } 
     else if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) {
+      // Si existe un preview previo, liberar su espacio
       if (ctx.preview) this.currentTotalSize -= ctx.preview.size;
       ctx.preview = fileRecord;
     } 
     else {
-      // Es un segmento .ts
-      // Verificar si existía (raro en TS pero posible) para ajustar peso
+      // Es un segmento .ts o init.mp4
       const existing = ctx.segments.get(filename);
+      // Si ya existía este segmento específico (raro en HLS live, pero posible), restar peso anterior
       if (existing) this.currentTotalSize -= existing.size;
       
       ctx.segments.set(filename, fileRecord);
     }
 
-    // Sumar nuevo peso
+    // Sumar el peso del nuevo archivo
     this.currentTotalSize += size;
     return true;
   }
 
   /**
-   * Recupera un archivo
+   * Recupera un archivo para servirlo vía HTTP
    */
   getFile(streamKey: string, filename: string): FileRecord | undefined {
     const ctx = this.streams.get(streamKey);
     if (!ctx) return undefined;
 
-    // Actualizamos actividad para que el GC no lo mate
-    // (Opcional: solo actualizar en escrituras si prefieres lectura pasiva)
+    // Opcional: Actualizar lastActivity en lectura mantiene el stream vivo
     // ctx.lastActivity = Date.now(); 
 
     if (filename.endsWith('.m3u8')) return ctx.playlist || undefined;
@@ -104,14 +107,13 @@ export class HlsRamStore {
   }
 
   /**
-   * Borra un archivo específico (Llamado por FFmpeg DELETE)
+   * Borra un archivo específico
    */
   deleteFile(streamKey: string, filename: string) {
     const ctx = this.streams.get(streamKey);
     if (!ctx) return;
 
     if (filename.endsWith('.m3u8')) {
-      // Raramente borramos el playlist mientras stremea, pero por si acaso
       if (ctx.playlist) {
         this.currentTotalSize -= ctx.playlist.size;
         ctx.playlist = null;
@@ -126,14 +128,12 @@ export class HlsRamStore {
       if (segment) {
         this.currentTotalSize -= segment.size;
         ctx.segments.delete(filename);
-        // console.log(`[RAM] Segmento eliminado: ${filename}`);
       }
     }
   }
 
   /**
    * Garbage Collector Optimizado
-   * Complejidad: O(S + k) donde S=Streams y k=Segmentos expirados
    */
   private gc() {
     const now = Date.now();
@@ -141,9 +141,8 @@ export class HlsRamStore {
     let segmentsRemoved = 0;
 
     for (const [streamKey, ctx] of this.streams) {
-      // CASO 1: Stream abandonado (FFmpeg murió hace rato)
+      // CASO 1: Stream inactivo completo
       if (now - ctx.lastActivity > this.MAX_STREAM_IDLE) {
-        // Calcular memoria liberada
         let freedBytes = 0;
         if (ctx.playlist) freedBytes += ctx.playlist.size;
         if (ctx.preview) freedBytes += ctx.preview.size;
@@ -152,10 +151,10 @@ export class HlsRamStore {
         this.currentTotalSize -= freedBytes;
         this.streams.delete(streamKey);
         streamsRemoved++;
-        continue; // Pasamos al siguiente stream
+        continue;
       }
 
-      // CASO 2: Limpieza de segmentos viejos (Fallback si FFmpeg no manda DELETE)
+      // CASO 2: Limpieza de segmentos viejos dentro de un stream activo
       for (const [filename, segment] of ctx.segments) {
         if (now - segment.updatedAt > this.MAX_SEGMENT_AGE) {
           this.currentTotalSize -= segment.size;
@@ -165,13 +164,12 @@ export class HlsRamStore {
       }
     }
 
-    if (streamsRemoved > 0 || segmentsRemoved > 0) {
-        // Log de depuración ligero
-        // console.log(`[GC] Streams purgados: ${streamsRemoved}, Segmentos purgados: ${segmentsRemoved}. RAM Uso: ${(this.currentTotalSize / 1024 / 1024).toFixed(2)} MB`);
+    // Log solo si hubo cambios significativos para no saturar la consola
+    if (streamsRemoved > 0 || segmentsRemoved > 5) {
+        console.log(`[GC] Limpieza: ${streamsRemoved} streams muertos, ${segmentsRemoved} segmentos viejos. RAM en uso: ${this.getStats().memoryUsageMB} MB`);
     }
   }
 
-  // Utilidad para monitoreo
   getStats() {
     return {
       totalStreams: this.streams.size,
@@ -181,4 +179,5 @@ export class HlsRamStore {
   }
 }
 
+// Exportar instancia singleton
 export const ramStore = new HlsRamStore();
