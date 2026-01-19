@@ -267,7 +267,7 @@ describe("RTMP Handshake Module", () => {
         digest.copy(serverS1, 1528);
 
         // This is simplified validation for testing
-        const result = clientHandshake["validateDigest"](serverS1);
+        const result = (clientHandshake as any)["validateDigest"](serverS1);
         expect(result).toBe(true);
       });
 
@@ -277,19 +277,23 @@ describe("RTMP Handshake Module", () => {
           invalidPacket[i] = Math.floor(Math.random() * 256);
         }
 
-        const result = clientHandshake["validateDigest"](invalidPacket);
+        const result = (clientHandshake as any)["validateDigest"](
+          invalidPacket,
+        );
         expect(result).toBe(false);
       });
 
       it("should reject packets shorter than handshake size", () => {
         const shortPacket = Buffer.alloc(100);
-        const result = clientHandshake["validateDigest"](shortPacket);
+        const result = (clientHandshake as any)["validateDigest"](shortPacket);
         expect(result).toBe(false);
       });
     });
 
     describe("processServerResponse", () => {
       it("should reject insufficient data", () => {
+        clientHandshake.generateC0();
+        clientHandshake.generateC1();
         const result = clientHandshake.processServerResponse(Buffer.alloc(10));
 
         expect(result.success).toBe(false);
@@ -297,6 +301,10 @@ describe("RTMP Handshake Module", () => {
       });
 
       it("should reject incorrect server version", () => {
+        clientHandshake.generateC0();
+        clientHandshake.generateC1();
+        clientHandshake.generateC0();
+        clientHandshake.generateC1();
         const serverResponse = Buffer.alloc(RTMP_HANDSHAKE_SIZE * 2 + 1);
         serverResponse[0] = 0x02; // Wrong version
         const result = clientHandshake.processServerResponse(serverResponse);
@@ -325,6 +333,8 @@ describe("RTMP Handshake Module", () => {
         s2Digest.copy(s2, RTMP_HANDSHAKE_SIZE - 1);
 
         const serverResponse = Buffer.concat([s0, s1, s2]);
+        clientHandshake.generateC0();
+        clientHandshake.generateC1();
         const result = clientHandshake.processServerResponse(serverResponse);
 
         expect(result.success).toBe(true);

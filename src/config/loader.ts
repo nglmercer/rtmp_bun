@@ -1,11 +1,10 @@
 import TOML from "@iarna/toml";
-import { FSWatcher } from "node:fs";
 import {
   rtmpConfigSchema,
   createDefaultConfig,
   type RtmpConfig,
 } from "./schemas";
-import * as fs from "node:fs/promises";
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 interface ConfigLoaderOptions {
@@ -18,7 +17,7 @@ export class ConfigLoader {
   private config: RtmpConfig | null = null;
   private configPath: string;
   private format: "json" | "toml";
-  private watcher: FSWatcher | null = null;
+  private watcher: fs.FSWatcher | null = null;
   private changeListeners: Array<(config: RtmpConfig) => void> = [];
 
   constructor(options: ConfigLoaderOptions = {}) {
@@ -49,10 +48,9 @@ export class ConfigLoader {
 
   private async setupWatcher(): Promise<void> {
     try {
-      this.watcher = fs.watch(this.configPath, async (eventType) => {
+      this.watcher = fs.watch(this.configPath, (eventType) => {
         if (eventType === "change") {
-          await this.load();
-          this.notifyListeners();
+          this.load().then(() => this.notifyListeners());
         }
       });
     } catch (error) {
@@ -90,15 +88,15 @@ export class ConfigLoader {
   private async ensureDirectoryExists(): Promise<void> {
     const dir = path.dirname(this.configPath);
     try {
-      await fs.access(dir);
+      await fs.promises.access(dir);
     } catch {
-      await fs.mkdir(dir, { recursive: true });
+      await fs.promises.mkdir(dir, { recursive: true });
     }
   }
 
   public async load(): Promise<RtmpConfig> {
     try {
-      const content = await fs.readFile(this.configPath, "utf-8");
+      const content = await fs.promises.readFile(this.configPath, "utf-8");
       let rawData: unknown;
 
       rawData =
@@ -108,13 +106,16 @@ export class ConfigLoader {
 
       const result = rtmpConfigSchema(rawData);
 
-      if (result.problems) {
-        throw new Error(
-          `Configuration validation failed:\n${result.problems.map((p) => `  - ${p}`).join("\n")}`,
-        );
+      if (typeof result === "object" && "problems" in result) {
+        const problems = (result as any).problems;
+        if (Array.isArray(problems)) {
+          throw new Error(
+            `Configuration validation failed:\n${problems.map((p: unknown) => `  - ${p}`).join("\n")}`,
+          );
+        }
       }
 
-      this.config = result.data;
+      this.config = result as RtmpConfig;
       return this.config;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -141,7 +142,7 @@ export class ConfigLoader {
         content = TOML.stringify(configToSave as any);
       }
 
-      await fs.writeFile(this.configPath, content, "utf-8");
+      await fs.promises.writeFile(this.configPath, content, "utf-8");
     } catch (error) {
       throw new Error(`Failed to save configuration: ${error}`);
     }

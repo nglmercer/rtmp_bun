@@ -124,7 +124,6 @@ export class RTMPServer {
         });
 
         setTimeout(() => {
-          this.server?.closeAllConnections?.();
           this.server = null;
           this.isRunning = false;
           resolve();
@@ -148,9 +147,7 @@ export class RTMPServer {
         this.connections.delete(connectionId);
       },
       onMessage: (message, client) => {
-        console.log(
-          `[RTMPServer] Message from ${connectionId}: ${message.type}`,
-        );
+        console.log(`[RTMPServer] Message from ${connectionId}`);
       },
       onHandshakeComplete: (result, client) => {
         console.log(
@@ -159,7 +156,7 @@ export class RTMPServer {
       },
       onStreamPublishStart: (streamName, client) => {
         console.log(`[RTMPServer] Stream publish started: ${streamName}`);
-        this.config.targets.forEach((target) => {
+        this.config.targets.forEach((target: any) => {
           if (target.enabled) {
             console.log(
               `[RTMPServer] Forwarding stream ${streamName} to ${target.url}`,

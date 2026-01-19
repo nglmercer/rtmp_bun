@@ -1,4 +1,4 @@
-import { type } from "arktype";
+import { type as arktype } from "arktype";
 
 // RTMP Handshake constants and types
 export const RTMP_VERSION = 0x03;
@@ -125,12 +125,14 @@ export class RtmpHandshake {
 
     randomData.copy(buffer, 8);
 
-    // Create digest at offset 1536 (for simple RTMP)
-    const digest = createDigest(buffer.subarray(0, 1528));
-    digest.copy(buffer, 1528);
+    // Create digest at last byte (position 1535 for 1536-byte buffer)
+    const digest = createDigest(buffer.subarray(0, 1535));
+    digest.copy(buffer, 1535);
 
     this.context.clientTimestamp = timestamp;
     this.sequence.push(buffer);
+    this.context.state = "c1_received";
+    this.state = "c1_received";
 
     console.log("[RTMP Handshake] Generated C1 with timestamp:", timestamp);
     return buffer;
@@ -144,19 +146,21 @@ export class RtmpHandshake {
 
     const buffer = Buffer.alloc(RTMP_HANDSHAKE_SIZE);
 
-    // Copy server's timestamp to response (bytes 4-7 in a typical RTMP handshake)
+    // Copy server's timestamp to echo position (4-7)
     const serverTimestamp = serverS1.readUInt32BE(0);
     buffer.writeUInt32BE(serverTimestamp, 4);
 
+    // Copy echoed data from server S1 starting at position 4
     const echoData = serverS1.subarray(4, RTMP_HANDSHAKE_SIZE);
     echoData.copy(buffer, 8);
 
-    // Generate response digest
-    const Digest = createDigest(echoData);
-    Digest.copy(buffer, RTMP_HANDSHAKE_SIZE - 1);
+    // Generate response digest from buffer (positions 0-1534)
+    const dataToDigest = buffer.subarray(0, 1535);
+    const Digest = createDigest(dataToDigest);
+    Digest.copy(buffer, 1535);
 
-    this.context.state = "c2_received";
-    this.state = "c2_received";
+    this.context.state = "completed";
+    this.state = "completed";
     this.sequence.push(buffer);
 
     console.log("[RTMP Handshake] Generated C2 (response to server S1)");
@@ -225,6 +229,7 @@ export class RtmpHandshake {
 
       if (serverS1 && this.state !== "completed") {
         // We have server's S1, so generate C2
+        // generateC2 sets state to "completed"
         const c2 = this.generateC2(serverS1);
         return Buffer.concat([combined, c2]);
       }
@@ -330,18 +335,19 @@ export class RtmpServerHandshake {
     }
     randomData.copy(s1, 8);
 
-    const digest = createDigest(s1.subarray(0, 1528));
-    digest.copy(s1, 1528);
+    const digest = createDigest(s1.subarray(0, 1535));
+    digest.copy(s1, 1535);
 
     // Generate S2 (echo of C1 with server's timestamp)
     const s2 = Buffer.alloc(RTMP_HANDSHAKE_SIZE);
-    s2.writeUInt32BE(Math.floor(serverTimestamp), 4);
-
+    // Copy C2 timestamp + data (positions 4-1535 of c1)
     const echoData = c1.subarray(4, RTMP_HANDSHAKE_SIZE);
-    echoData.copy(s2, 8);
+    echoData.copy(s2, 4);
 
-    const digest2 = createDigest(echoData);
-    digest2.copy(s2, RTMP_HANDSHAKE_SIZE - 1);
+    // Generate response digest from echoed data (positions 4-1534)
+    const dataToDigest = s2.subarray(0, 1535);
+    const digest2 = createDigest(dataToDigest);
+    digest2.copy(s2, 1535);
 
     console.log("[RTMP Handshake] Generated S0, S1, S2 for server response");
 
@@ -415,44 +421,42 @@ export async function performHandshakeSimulation(
   });
 }
 
-// Type guards
+// Type guards for validation
 export const isHandshakeResult = (obj: unknown): obj is HandshakeResult => {
-  const validation = type({
-    success: "boolean",
-    error: type.optional("string"),
-    context: type.optional("unknown"),
-    handshakeBytes: type.optional("number"),
-  });
+  if (typeof obj !== "object" || obj === null) return false;
 
-  return validation(obj).problems === undefined;
+  const result = obj as any;
+
+  return (
+    typeof result.success === "boolean" &&
+    (result.error === undefined || typeof result.error === "string") &&
+    (result.handshakeBytes === undefined ||
+      typeof result.handshakeBytes === "number")
+  );
 };
 
 export const isHandshakeContext = (obj: unknown): obj is HandshakeContext => {
-  const validation = type({
-    state: type.enumerated(
-      "idle",
-      "c0_received",
-      "c1_received",
-      "c2_received",
-      "completed",
-    ),
-    clientTimestamp: "number",
-    serverTimestamp: "number",
-    challenge: "instanceof Uint8Array",
-    response: "instanceof Uint8Array",
-    privateKey: type.optional("instanceof Uint8Array"),
-    publicKey: type.optional("instanceof Uint8Array"),
-  });
+  if (typeof obj !== "object" || obj === null) return false;
 
-  return validation(obj).problems === undefined;
-};
+  const ctx = obj as any;
+  const validStates: HandshakeState[] = [
+    "idle",
+    "c0_received",
+    "c1_received",
+    "c2_received",
+    "completed",
+  ];
 
-// Export handshake types for external usage
-export type {
-  HandshakeState,
-  HandshakePacket,
-  HandshakeContext,
-  HandshakeResult,
+  return (
+    typeof ctx.state === "string" &&
+    validStates.includes(ctx.state as HandshakeState) &&
+    typeof ctx.clientTimestamp === "number" &&
+    typeof ctx.serverTimestamp === "number" &&
+    Buffer.isBuffer(ctx.challenge) &&
+    Buffer.isBuffer(ctx.response) &&
+    (ctx.privateKey === undefined || Buffer.isBuffer(ctx.privateKey)) &&
+    (ctx.publicKey === undefined || Buffer.isBuffer(ctx.publicKey))
+  );
 };
 
 // Default export for convenience
