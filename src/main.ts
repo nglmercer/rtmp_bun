@@ -136,7 +136,16 @@ export class RTMPServer {
     const connectionId = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`[RTMPServer] New connection from ${connectionId}`);
 
-    const connection = new RtmpConnection(this.config.server, {
+    // Map server config to connection config
+    const connectionConfig = {
+      chunkSize: this.config.server.chunkSize,
+      windowAckSize: this.config.server.windowAckSize,
+      peerBandwidth: this.config.server.peerBandwidth,
+      logLevel: this.config.server.logLevel as 'debug' | 'info' | 'warn' | 'error',
+      timeout: 30000
+    };
+
+    const connection = new RtmpConnection(connectionConfig, {
       onConnect: (client) => {
         console.log(`[RTMPServer] Client connected: ${connectionId}`);
       },

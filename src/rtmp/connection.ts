@@ -1,115 +1,69 @@
-import { type as arktype } from "arktype";
+import { RtmpSocket, GenericSocketAdapter } from './socket.interface';
+import {
+  ConnectionConfig,
+  ConnectionState,
+  RtmpEventHandlers,
+  RtmpPacket,
+  RtmpHeader,
+  MessageType,
+  MediaStreamType,
+  RTMP_VERSION,
+  RTMP_HANDSHAKE_SIZE,
+  isRtmpPacket,
+  UserControlEventType,
+  BandwidthLimitType,
+  ConnectionStats,
+  AmfDataType,
+  AmfObject,
+  RtmpConnectionInterface,
+  PartialConnectionConfig
+} from './types';
 import { type HandshakeResult } from "../handshake/index";
+import { AmfUtility, amf } from './amf';
 
-// RTMP Protocol constants
-export const RTMP_MAJOR_VERSION = 3;
-export const RTMP_VERSION = 0x03;
-export const RTMP_HANDSHAKE_SIZE = 1536;
-export const RTMP_CONNECTION_ID_LENGTH = 12;
-
-// Chunk type constants
-export enum ChunkType {
-  FULL = 0,
-  RELATIVE = 1,
-  LARGE_ABSOLUTE = 2,
-  ABSOLUTE = 3,
-}
-
-// Message type constants
-export enum MessageType {
-  SET_CHUNK_SIZE = 1,
-  ABORT = 2,
-  ACKNOWLEDGEMENT = 3,
-  USER_CONTROL = 4,
-  WINDOW_ACKNOWLEDGEMENT_SIZE = 5,
-  SET_PEER_BANDWIDTH = 6,
-  AUDIO = 8,
-  VIDEO = 9,
-  COMMAND_AMF0 = 20,
-  COMMAND_AMF3 = 17,
-  DATA_AMF0 = 18,
-  DATA_AMF3 = 15,
-  SHARED_OBJECT_AMF0 = 19,
-  SHARED_OBJECT_AMF3 = 16,
-  AGGREGATE = 22,
-}
-
-// Connection states
-export enum ConnectionState {
-  INIT = "init",
-  HANDSHAKE = "handshake",
-  READING_HEADER = "reading_header",
-  READING_BODY = "reading_body",
-  READY = "ready",
-  CONNECTED = "connected",
-  DISCONNECTED = "disconnected",
-  ERROR = "error",
-}
-
-// Media types
-export enum MediaStreamType {
-  AUDIO = "audio",
-  VIDEO = "video",
-  DATA = "data",
-}
-
-// RTMP Header
-export interface RtmpHeader {
-  timestamp: number;
-  messageLength: number;
-  messageTypeId: number;
-  messageStreamId: number;
-  chunkStreamId: number;
-  extendedTimestamp: boolean;
-}
-
-// RTMP Packet
-export interface RtmpPacket {
-  header: RtmpHeader;
-  payload: Buffer;
-  timestamp: number;
-}
-
-// Connection Configuration
-export interface ConnectionConfig {
-  chunkSize: number;
-  windowAckSize: number;
-  peerBandwidth: number;
-  logLevel: string;
-}
-
-// Event Handlers
-export interface RtmpEventHandlers {
-  onConnect: (client: any) => void;
-  onDisconnect: (client: any, reason: string) => void;
-  onMessage: (message: RtmpPacket, client: any) => void;
-  onHandshakeComplete: (result: HandshakeResult, client: any) => void;
-  onStreamPublishStart: (streamName: string, client: any) => void;
-  onStreamPublishStop: (streamName: string, client: any) => void;
-  onStreamPlayStart: (streamName: string, client: any) => void;
-  onStreamPlayStop: (streamName: string, client: any) => void;
-  onError: (error: Error, client: any) => void;
-}
-
-export class RtmpConnection {
-  private socket: any = null;
+/**
+ * RTMP Connection Class with improved type safety and modular design
+ */
+export class RtmpConnection implements RtmpConnectionInterface {
+  private socket: RtmpSocket | null = null;
   private state: ConnectionState = ConnectionState.INIT;
   private config: ConnectionConfig;
-  private handlers: RtmpEventHandlers;
+  private handlers: RtmpEventHandlers<RtmpConnection>;
   private buffer: Buffer = Buffer.alloc(0);
   private transactionId = 1;
   private currentStreamId = 0;
   private streamId: number | null = null;
   private handshakeBuffer: Buffer = Buffer.alloc(0);
+  private stats: ConnectionStats;
 
-  constructor(config?: ConnectionConfig, handlers?: RtmpEventHandlers) {
-    this.config = config || {
+  constructor(config?: Partial<ConnectionConfig>, handlers?: Partial<RtmpEventHandlers<RtmpConnection>>) {
+    this.config = this.validateConfig(config);
+    this.handlers = this.validateHandlers(handlers);
+    this.stats = this.initializeStats();
+  }
+
+  private validateConfig(config?: Partial<ConnectionConfig>): ConnectionConfig {
+    const defaultConfig: ConnectionConfig = {
       chunkSize: 4096,
       windowAckSize: 2500000,
       peerBandwidth: 2500000,
       logLevel: "info",
+      timeout: 30000
     };
-    this.handlers = handlers || {
+
+    if (!config) return defaultConfig;
+
+    return {
+      chunkSize: config.chunkSize ?? defaultConfig.chunkSize,
+      windowAckSize: config.windowAckSize ?? defaultConfig.windowAckSize,
+      peerBandwidth: config.peerBandwidth ?? defaultConfig.peerBandwidth,
+      logLevel: config.logLevel ?? defaultConfig.logLevel,
+      timeout: config.timeout ?? defaultConfig.timeout
+    };
+  }
+
+  private validateHandlers(handlers?: Partial<RtmpEventHandlers<RtmpConnection>>): RtmpEventHandlers<RtmpConnection> {
+    const defaultHandlers: RtmpEventHandlers<RtmpConnection> = {
       onConnect: () => {},
       onDisconnect: () => {},
       onMessage: () => {},
@@ -120,13 +74,99 @@ export class RtmpConnection {
       onStreamPlayStop: () => {},
       onError: () => {},
     };
+
+    if (!handlers) return defaultHandlers;
+
+    return {
+      onConnect: handlers.onConnect ?? defaultHandlers.onConnect,
+      onDisconnect: handlers.onDisconnect ?? defaultHandlers.onDisconnect,
+      onMessage: handlers.onMessage ?? defaultHandlers.onMessage,
+      onHandshakeComplete: handlers.onHandshakeComplete ?? defaultHandlers.onHandshakeComplete,
+      onStreamPublishStart: handlers.onStreamPublishStart ?? defaultHandlers.onStreamPublishStart,
+      onStreamPublishStop: handlers.onStreamPublishStop ?? defaultHandlers.onStreamPublishStop,
+      onStreamPlayStart: handlers.onStreamPlayStart ?? defaultHandlers.onStreamPlayStart,
+      onStreamPlayStop: handlers.onStreamPlayStop ?? defaultHandlers.onStreamPlayStop,
+      onError: handlers.onError ?? defaultHandlers.onError,
+    };
   }
 
+  private initializeStats(): ConnectionStats {
+    return {
+      bytesReceived: 0,
+      bytesSent: 0,
+      packetsReceived: 0,
+      packetsSent: 0,
+      connectedAt: new Date(),
+      lastActivity: new Date()
+    };
+  }
+
+  /**
+   * Set the socket for this connection
+   * @param socket Raw socket to be wrapped in adapter
+   */
   public setSocket(socket: any): void {
+    this.socket = new GenericSocketAdapter(socket);
+    this.updateLastActivity();
+  }
+
+  /**
+   * Set a specific socket adapter
+   * @param socket Already adapted socket
+   */
+  public setSocketAdapter(socket: RtmpSocket): void {
     this.socket = socket;
+    this.updateLastActivity();
+  }
+
+  public getState(): ConnectionState {
+    return this.state;
+  }
+
+  public getSocket(): RtmpSocket | null {
+    return this.socket;
+  }
+
+  public getConfig(): ConnectionConfig {
+    return this.config;
+  }
+
+  public getStats(): ConnectionStats {
+    return this.stats;
+  }
+
+  public isConnected(): boolean {
+    return this.state === ConnectionState.CONNECTED && !!this.socket?.isConnected();
+  }
+
+  private updateLastActivity(): void {
+    this.stats.lastActivity = new Date();
+  }
+
+  private updateBytesReceived(bytes: number): void {
+    this.stats.bytesReceived += bytes;
+    this.updateLastActivity();
+  }
+
+  private updateBytesSent(bytes: number): void {
+    this.stats.bytesSent += bytes;
+    this.updateLastActivity();
+  }
+
+  private incrementPacketsReceived(): void {
+    this.stats.packetsReceived++;
+    this.updateLastActivity();
+  }
+
+  private incrementPacketsSent(): void {
+    this.stats.packetsSent++;
+    this.updateLastActivity();
   }
 
   public async handleData(data: Buffer): Promise<void> {
+    if (!data || data.length === 0) return;
+
+    this.updateBytesReceived(data.length);
     this.buffer = Buffer.concat([this.buffer, data]);
 
     try {
@@ -141,12 +181,16 @@ export class RtmpConnection {
         case ConnectionState.CONNECTED:
           await this.processRTMPPackets();
           break;
+        case ConnectionState.DISCONNECTED:
+        case ConnectionState.ERROR:
+          this.log(`[RTMP Connection] Ignoring data in state: ${this.state}`);
+          break;
         default:
           this.socket?.destroy();
           break;
       }
     } catch (error) {
-      this.handlers.onError(error as Error, this);
+      this.handleError(error as Error, 'handleData');
       this.socket?.destroy();
     }
   }
@@ -158,31 +202,40 @@ export class RtmpConnection {
 
     // Check if this is RTMP handshake (version byte)
     if (this.buffer[0] !== RTMP_VERSION) {
-      this.handlers.onError(new Error("Invalid RTMP version"), this);
+      const error = new Error(`Invalid RTMP version. Expected: ${RTMP_VERSION}, Got: ${this.buffer[0]}`);
+      this.handleError(error, 'processHandshake');
       this.socket?.destroy();
       return;
     }
 
-    const { RtmpHandshake, RtmpServerHandshake } =
-      await import("../handshake/index");
+    try {
+      const { RtmpHandshake, RtmpServerHandshake } = await import("../handshake/index");
 
-    if (this.state === ConnectionState.INIT) {
-      const serverHandshake = new RtmpServerHandshake();
-      const handshakeResult = serverHandshake.generateServerResponse(
-        this.buffer,
-      );
-      this.socket?.write(handshakeResult);
+      if (this.state === ConnectionState.INIT) {
+        const serverHandshake = new RtmpServerHandshake();
+        const handshakeResult = serverHandshake.generateServerResponse(this.buffer);
 
-      // Consume handshake bytes
-      this.buffer = this.buffer.subarray(
-        1 + RTMP_HANDSHAKE_SIZE * 2 + RTMP_HANDSHAKE_SIZE,
-      );
+        if (!handshakeResult || handshakeResult.length === 0) {
+          throw new Error("Handshake failed - no response generated");
+        }
 
-      this.state = ConnectionState.READY;
-      this.handlers.onHandshakeComplete(
-        { success: true, handshakeBytes: handshakeResult.length },
-        this,
-      );
+        this.socket?.write(handshakeResult);
+        this.updateBytesSent(handshakeResult.length);
+
+        // Consume handshake bytes
+        this.buffer = this.buffer.subarray(
+          1 + RTMP_HANDSHAKE_SIZE * 2 + RTMP_HANDSHAKE_SIZE,
+        );
+
+        this.state = ConnectionState.READY;
+        this.handlers.onHandshakeComplete(
+          { success: true, handshakeBytes: handshakeResult.length },
+          this,
+        );
+      }
+    } catch (error) {
+      this.handleError(error as Error, 'processHandshake');
+      this.socket?.destroy();
     }
   }
 
@@ -221,7 +274,6 @@ export class RtmpConnection {
         }
       } else {
         // Type 1, 2, 3 - relative timestamp
-        // For simplicity, assume type 3 for subsequent chunks
         if (chunkType === 1) {
           if (this.buffer.length < 4) break;
           timestampDelta = this.buffer.readUIntBE(1, 3);
@@ -249,179 +301,225 @@ export class RtmpConnection {
 
       const packet: RtmpPacket = {
         header,
-        payload: Buffer.alloc(0),
+        payload: this.buffer.subarray(bytesConsumed, bytesConsumed + messageLength),
         timestamp: timestamp || timestampDelta,
       };
 
-      this.buffer = this.buffer.subarray(bytesConsumed);
+      this.buffer = this.buffer.subarray(bytesConsumed + messageLength);
+      this.incrementPacketsReceived();
+
       await this.processMessage(packet);
     }
   }
 
   private async processMessage(packet: RtmpPacket): Promise<void> {
+    if (!isRtmpPacket(packet)) {
+      this.handleError(new Error("Invalid RTMP packet structure"), 'processMessage');
+      return;
+    }
+
     const { messageTypeId } = packet.header;
 
-    switch (messageTypeId) {
-      case MessageType.SET_CHUNK_SIZE:
-        await this.handleSetChunkSize(packet);
-        break;
-      case MessageType.ABORT:
-        await this.handleAbort(packet);
-        break;
-      case MessageType.ACKNOWLEDGEMENT:
-        await this.handleAcknowledgement(packet);
-        break;
-      case MessageType.WINDOW_ACKNOWLEDGEMENT_SIZE:
-        await this.handleWindowAckSize(packet);
-        break;
-      case MessageType.SET_PEER_BANDWIDTH:
-        await this.handleSetPeerBandwidth(packet);
-        break;
-      case MessageType.USER_CONTROL:
-        await this.handleUserControl(packet);
-        break;
-      case MessageType.COMMAND_AMF0:
-      case MessageType.COMMAND_AMF3:
-        await this.handleCommand(packet);
-        break;
-      case MessageType.AUDIO:
-      case MessageType.VIDEO:
-        await this.handleMediaData(packet);
-        break;
-      case MessageType.DATA_AMF0:
-      case MessageType.DATA_AMF3:
-        await this.handleDataMessage(packet);
-        break;
-      default:
-        this.handlers.onError(
-          new Error(`Unknown message type: ${messageTypeId}`),
-          this,
-        );
-        break;
+    try {
+      switch (messageTypeId) {
+        case MessageType.SET_CHUNK_SIZE:
+          await this.handleSetChunkSize(packet);
+          break;
+        case MessageType.ABORT:
+          await this.handleAbort(packet);
+          break;
+        case MessageType.ACKNOWLEDGEMENT:
+          await this.handleAcknowledgement(packet);
+          break;
+        case MessageType.WINDOW_ACKNOWLEDGEMENT_SIZE:
+          await this.handleWindowAckSize(packet);
+          break;
+        case MessageType.SET_PEER_BANDWIDTH:
+          await this.handleSetPeerBandwidth(packet);
+          break;
+        case MessageType.USER_CONTROL:
+          await this.handleUserControl(packet);
+          break;
+        case MessageType.COMMAND_AMF0:
+        case MessageType.COMMAND_AMF3:
+          await this.handleCommand(packet);
+          break;
+        case MessageType.AUDIO:
+        case MessageType.VIDEO:
+          await this.handleMediaData(packet);
+          break;
+        case MessageType.DATA_AMF0:
+        case MessageType.DATA_AMF3:
+          await this.handleDataMessage(packet);
+          break;
+        default:
+          this.handleError(new Error(`Unknown message type: ${messageTypeId}`), 'processMessage');
+          break;
+      }
+    } catch (error) {
+      this.handleError(error as Error, `processMessage (type: ${messageTypeId})`);
     }
   }
 
   private async handleSetChunkSize(packet: RtmpPacket): Promise<void> {
+    if (packet.payload.length < 4) {
+      this.handleError(new Error("Invalid SET_CHUNK_SIZE payload length"), 'handleSetChunkSize');
+      return;
+    }
+
     const chunkSize = packet.payload.readUInt32BE(0);
     this.config.chunkSize = chunkSize;
     this.log(`[RTMP Connection] Set chunk size: ${chunkSize}`);
   }
 
   private async handleAbort(packet: RtmpPacket): Promise<void> {
+    if (packet.payload.length < 4) {
+      this.handleError(new Error("Invalid ABORT payload length"), 'handleAbort');
+      return;
+    }
+
     const chunkStreamId = packet.payload.readUInt32BE(0);
     this.log(`[RTMP Connection] Abort chunk stream: ${chunkStreamId}`);
     this.buffer = Buffer.alloc(0); // Clear buffer
   }
 
   private async handleAcknowledgement(packet: RtmpPacket): Promise<void> {
+    if (packet.payload.length < 4) {
+      this.handleError(new Error("Invalid ACKNOWLEDGEMENT payload length"), 'handleAcknowledgement');
+      return;
+    }
+
     const sequenceNumber = packet.payload.readUInt32BE(0);
     this.log(`[RTMP Connection] Acknowledgement: ${sequenceNumber}`);
   }
 
   private async handleWindowAckSize(packet: RtmpPacket): Promise<void> {
+    if (packet.payload.length < 4) {
+      this.handleError(new Error("Invalid WINDOW_ACKNOWLEDGEMENT_SIZE payload length"), 'handleWindowAckSize');
+      return;
+    }
+
     const ackSize = packet.payload.readUInt32BE(0);
     this.config.windowAckSize = ackSize;
     this.log(`[RTMP Connection] Window ack size: ${ackSize}`);
   }
 
   private async handleSetPeerBandwidth(packet: RtmpPacket): Promise<void> {
+    if (packet.payload.length < 5) {
+      this.handleError(new Error("Invalid SET_PEER_BANDWIDTH payload length"), 'handleSetPeerBandwidth');
+      return;
+    }
+
     const bandwidth = packet.payload.readUInt32BE(0);
     const limitType = packet.payload.readUInt8(4);
     this.config.peerBandwidth = bandwidth;
     this.log(
-      `[RTMP Connection] Set peer bandwidth: ${bandwidth}, limit type: ${limitType}`,
+      `[RTMP Connection] Set peer bandwidth: ${bandwidth}, limit type: ${BandwidthLimitType[limitType] || limitType}`,
     );
   }
 
   private async handleUserControl(packet: RtmpPacket): Promise<void> {
+    if (packet.payload.length < 2) {
+      this.handleError(new Error("Invalid USER_CONTROL payload length"), 'handleUserControl');
+      return;
+    }
+
     const eventType = packet.payload.readUInt16BE(0);
     const eventData = packet.payload.subarray(2);
 
-    this.log(`[RTMP Connection] User control event: ${eventType}`);
+    this.log(`[RTMP Connection] User control event: ${UserControlEventType[eventType] || eventType}`);
 
     // Handle specific user control events
     switch (eventType) {
-      case 2: // SetBuffer
+      case UserControlEventType.SET_BUFFER_LENGTH:
+        if (eventData.length < 8) {
+          this.handleError(new Error("Invalid SET_BUFFER_LENGTH event data length"), 'handleUserControl');
+          return;
+        }
         const streamId = eventData.readUInt32BE(0);
         const bufferMs = eventData.readUInt32BE(4);
         this.log(
           `[RTMP Connection] Set buffer for stream ${streamId}: ${bufferMs}ms`,
         );
         break;
-      case 3: // Ping
+      case UserControlEventType.PING_REQUEST:
         // Send Pong back
-        await this.sendUserControl(2, Buffer.alloc(0));
+        await this.sendUserControl(UserControlEventType.PING_RESPONSE, Buffer.alloc(0));
         break;
-      case 4: // ServerBW
-        const serverBW = eventData.readUInt32BE(0);
-        this.log(`[RTMP Connection] Server bandwidth: ${serverBW}`);
+      case UserControlEventType.STREAM_BEGIN:
+      case UserControlEventType.STREAM_EOF:
+      case UserControlEventType.STREAM_DRY:
+      case UserControlEventType.STREAM_IS_RECORDED:
+        this.log(`[RTMP Connection] Stream event: ${UserControlEventType[eventType]}`);
         break;
-      case 5: // Client BW
-        const clientBW = eventData.readUInt32BE(0);
-        const clientBWType = eventData.readUInt8(4);
-        this.log(
-          `[RTMP Connection] Client bandwidth: ${clientBW}, type: ${clientBWType}`,
-        );
+      default:
+        this.log(`[RTMP Connection] Unhandled user control event: ${eventType}`);
         break;
     }
   }
 
   private async handleCommand(packet: RtmpPacket): Promise<void> {
-    const commandName = this.extractAmfType(packet.payload, 0);
-    const transactionId = this.extractAmfType(packet.payload, 1);
-    const commandObject = this.extractAmfType(packet.payload, 2);
-    const extraData = packet.payload.subarray(
-      this.getAmfLength(packet.payload, 0) +
+    try {
+      const commandName = this.extractAmfType(packet.payload, 0);
+      const transactionId = this.extractAmfType(packet.payload, 1);
+      const commandObject = this.extractAmfType(packet.payload, 2);
+      const extraData = packet.payload.subarray(
+        this.getAmfLength(packet.payload, 0) +
         this.getAmfLength(packet.payload, 1) +
         this.getAmfLength(packet.payload, 2),
-    );
+      );
 
-    this.log(
-      `[RTMP Connection] Command: ${commandName}, transaction: ${transactionId}`,
-    );
+      this.log(
+        `[RTMP Connection] Command: ${commandName}, transaction: ${transactionId}`,
+      );
 
-    switch (commandName) {
-      case "connect":
-        await this.handleConnect(transactionId, commandObject, extraData);
-        break;
-      case "createStream":
-        await this.handleCreateStream(transactionId, commandObject, extraData);
-        break;
-      case "publish":
-        await this.handlePublish(transactionId, commandObject, extraData);
-        break;
-      case "play":
-        await this.handlePlay(transactionId, commandObject, extraData);
-        break;
-      case "close":
-        await this.handleClose(transactionId, commandObject, extraData);
-        break;
-      case "pause":
-        await this.handlePause(transactionId, commandObject, extraData);
-        break;
-      case "seek":
-        await this.handleSeek(transactionId, commandObject, extraData);
-        break;
-      case "receiveVideo":
-        await this.handleReceiveVideo(transactionId, commandObject, extraData);
-        break;
-      case "receiveAudio":
-        await this.handleReceiveAudio(transactionId, commandObject, extraData);
-        break;
-      case "onStatus":
-        this.log(
-          `[RTMP Connection] onStatus for ${commandName}: ${JSON.stringify(
+      if (typeof commandName !== 'string') {
+        throw new Error(`Invalid command name type: ${typeof commandName}`);
+      }
+
+      switch (commandName) {
+        case "connect":
+          await this.handleConnect(transactionId, commandObject, extraData);
+          break;
+        case "createStream":
+          await this.handleCreateStream(transactionId, commandObject, extraData);
+          break;
+        case "publish":
+          await this.handlePublish(transactionId, commandObject, extraData);
+          break;
+        case "play":
+          await this.handlePlay(transactionId, commandObject, extraData);
+          break;
+        case "close":
+          await this.handleClose(transactionId, commandObject, extraData);
+          break;
+        case "pause":
+          await this.handlePause(transactionId, commandObject, extraData);
+          break;
+        case "seek":
+          await this.handleSeek(transactionId, commandObject, extraData);
+          break;
+        case "receiveVideo":
+          await this.handleReceiveVideo(transactionId, commandObject, extraData);
+          break;
+        case "receiveAudio":
+          await this.handleReceiveAudio(transactionId, commandObject, extraData);
+          break;
+        case "onStatus":
+          this.log(
+            `[RTMP Connection] onStatus: ${JSON.stringify(commandObject)}`,
+          );
+          break;
+        default:
+          this.log(
+            `[RTMP Connection] Unknown command: ${commandName}`,
             commandObject,
-          )}`,
-        );
-        break;
-      default:
-        this.log(
-          `[RTMP Connection] Unknown command: ${commandName}`,
-          commandObject,
-          extraData,
-        );
-        break;
+            extraData,
+          );
+          break;
+      }
+    } catch (error) {
+      this.handleError(error as Error, 'handleCommand');
     }
   }
 
@@ -434,24 +532,29 @@ export class RtmpConnection {
       `[RTMP Connection] Connect request: ${JSON.stringify(commandObject)}`,
     );
 
-    // Send Window Acknowledgement Size
-    await this.sendWindowAckSize(this.config.windowAckSize);
+    try {
+      // Send Window Acknowledgement Size
+      await this.sendWindowAckSize(this.config.windowAckSize);
 
-    // Send Set Peer Bandwidth
-    await this.setPeerBandwidth(this.config.peerBandwidth, 2);
+      // Send Set Peer Bandwidth
+      await this.setPeerBandwidth(this.config.peerBandwidth, BandwidthLimitType.DYNAMIC);
 
-    // Send Set Chunk Size
-    await this.setChunkSize(this.config.chunkSize);
+      // Send Set Chunk Size
+      await this.setChunkSize(this.config.chunkSize);
 
-    // Send onStatus event
-    await this.sendOnStatus("NetConnection.Connect.Success", {
-      code: "NetConnection.Connect.Success",
-      level: "status",
-      description: "Connection accepted",
-    });
+      // Send onStatus event
+      await this.sendOnStatus("NetConnection.Connect.Success", {
+        code: "NetConnection.Connect.Success",
+        level: "status",
+        description: "Connection accepted",
+      });
 
-    this.state = ConnectionState.CONNECTED;
-    this.handlers.onConnect(this);
+      this.state = ConnectionState.CONNECTED;
+      this.handlers.onConnect(this);
+    } catch (error) {
+      this.handleError(error as Error, 'handleConnect');
+      await this.disconnect("Connection setup failed");
+    }
   }
 
   private async handleCreateStream(
@@ -469,21 +572,29 @@ export class RtmpConnection {
     commandObject: any,
     extraData: Buffer,
   ): Promise<void> {
-    const streamName = this.extractAmfType(extraData, 0);
-    const publishingType = this.extractAmfType(extraData, 1);
+    try {
+      const streamName = this.extractAmfType(extraData, 0);
+      const publishingType = this.extractAmfType(extraData, 1);
 
-    this.log(
-      `[RTMP Connection] Publish request: ${streamName}, type: ${publishingType}`,
-    );
+      if (typeof streamName !== 'string') {
+        throw new Error(`Invalid stream name type: ${typeof streamName}`);
+      }
 
-    await this.sendOnStatus("NetStream.Publish.Start", {
-      code: "NetStream.Publish.Start",
-      level: "status",
-      description: `Started publishing stream: ${streamName}`,
-      details: streamName,
-    });
+      this.log(
+        `[RTMP Connection] Publish request: ${streamName}, type: ${publishingType}`,
+      );
 
-    this.handlers.onStreamPublishStart(streamName, this);
+      await this.sendOnStatus("NetStream.Publish.Start", {
+        code: "NetStream.Publish.Start",
+        level: "status",
+        description: `Started publishing stream: ${streamName}`,
+        details: streamName,
+      });
+
+      this.handlers.onStreamPublishStart(streamName, this);
+    } catch (error) {
+      this.handleError(error as Error, 'handlePublish');
+    }
   }
 
   private async handlePlay(
@@ -491,17 +602,25 @@ export class RtmpConnection {
     commandObject: any,
     extraData: Buffer,
   ): Promise<void> {
-    const streamName = this.extractAmfType(extraData, 0);
+    try {
+      const streamName = this.extractAmfType(extraData, 0);
 
-    this.log(`[RTMP Connection] Play request: ${streamName}`);
+      if (typeof streamName !== 'string') {
+        throw new Error(`Invalid stream name type: ${typeof streamName}`);
+      }
 
-    await this.sendOnStatus("NetStream.Play.Start", {
-      code: "NetStream.Play.Start",
-      level: "status",
-      description: `Started playing stream: ${streamName}`,
-    });
+      this.log(`[RTMP Connection] Play request: ${streamName}`);
 
-    this.handlers.onStreamPlayStart(streamName, this);
+      await this.sendOnStatus("NetStream.Play.Start", {
+        code: "NetStream.Play.Start",
+        level: "status",
+        description: `Started playing stream: ${streamName}`,
+      });
+
+      this.handlers.onStreamPlayStart(streamName, this);
+    } catch (error) {
+      this.handleError(error as Error, 'handlePlay');
+    }
   }
 
   private async handleClose(
@@ -518,8 +637,12 @@ export class RtmpConnection {
     commandObject: any,
     extraData: Buffer,
   ): Promise<void> {
-    const pause = this.extractAmfType(extraData, 0);
-    this.log(`[RTMP Connection] Pause request: ${pause}`);
+    try {
+      const pause = this.extractAmfType(extraData, 0);
+      this.log(`[RTMP Connection] Pause request: ${pause}`);
+    } catch (error) {
+      this.handleError(error as Error, 'handlePause');
+    }
   }
 
   private async handleSeek(
@@ -527,8 +650,12 @@ export class RtmpConnection {
     commandObject: any,
     extraData: Buffer,
   ): Promise<void> {
-    const offset = this.extractAmfType(extraData, 0);
-    this.log(`[RTMP Connection] Seek request: ${offset}`);
+    try {
+      const offset = this.extractAmfType(extraData, 0);
+      this.log(`[RTMP Connection] Seek request: ${offset}`);
+    } catch (error) {
+      this.handleError(error as Error, 'handleSeek');
+    }
   }
 
   private async handleReceiveVideo(
@@ -536,8 +663,12 @@ export class RtmpConnection {
     commandObject: any,
     extraData: Buffer,
   ): Promise<void> {
-    const receive = this.extractAmfType(extraData, 0);
-    this.log(`[RTMP Connection] Receive video request: ${receive}`);
+    try {
+      const receive = this.extractAmfType(extraData, 0);
+      this.log(`[RTMP Connection] Receive video request: ${receive}`);
+    } catch (error) {
+      this.handleError(error as Error, 'handleReceiveVideo');
+    }
   }
 
   private async handleReceiveAudio(
@@ -545,26 +676,38 @@ export class RtmpConnection {
     commandObject: any,
     extraData: Buffer,
   ): Promise<void> {
-    const receive = this.extractAmfType(extraData, 0);
-    this.log(`[RTMP Connection] Receive audio request: ${receive}`);
+    try {
+      const receive = this.extractAmfType(extraData, 0);
+      this.log(`[RTMP Connection] Receive audio request: ${receive}`);
+    } catch (error) {
+      this.handleError(error as Error, 'handleReceiveAudio');
+    }
   }
 
   private async handleMediaData(packet: RtmpPacket): Promise<void> {
-    const isAudio = packet.header.messageTypeId === MessageType.AUDIO;
-    const mediaType = isAudio ? MediaStreamType.AUDIO : MediaStreamType.VIDEO;
+    try {
+      const isAudio = packet.header.messageTypeId === MessageType.AUDIO;
+      const mediaType = isAudio ? MediaStreamType.AUDIO : MediaStreamType.VIDEO;
 
-    this.log(
-      `[RTMP Connection] Media data: ${mediaType}, size: ${packet.payload.length}`,
-    );
+      this.log(
+        `[RTMP Connection] Media data: ${mediaType}, size: ${packet.payload.length}`,
+      );
 
-    // Forward to handlers
-    this.handlers.onMessage(packet, this);
+      // Forward to handlers
+      this.handlers.onMessage(packet, this);
+    } catch (error) {
+      this.handleError(error as Error, 'handleMediaData');
+    }
   }
 
   private async handleDataMessage(packet: RtmpPacket): Promise<void> {
-    const data = this.extractAmfType(packet.payload, 0);
-    this.log(`[RTMP Connection] Data message: ${JSON.stringify(data)}`);
-    this.handlers.onMessage(packet, this);
+    try {
+      const data = this.extractAmfType(packet.payload, 0);
+      this.log(`[RTMP Connection] Data message: ${JSON.stringify(data)}`);
+      this.handlers.onMessage(packet, this);
+    } catch (error) {
+      this.handleError(error as Error, 'handleDataMessage');
+    }
   }
 
   // Send methods
@@ -583,7 +726,7 @@ export class RtmpConnection {
 
   private async setPeerBandwidth(
     size: number,
-    limitType: number,
+    limitType: BandwidthLimitType,
   ): Promise<void> {
     const payload = Buffer.alloc(5);
     payload.writeUInt32BE(size, 0);
@@ -599,7 +742,7 @@ export class RtmpConnection {
     await this.sendMessage(MessageType.SET_CHUNK_SIZE, 0, 0, 0, payload);
   }
 
-  private async sendOnStatus(code: string, properties: any): Promise<void> {
+  private async sendOnStatus(code: string, properties: AmfObject): Promise<void> {
     const buffer = Buffer.alloc(1024);
     let offset = 0;
 
@@ -688,7 +831,7 @@ export class RtmpConnection {
   }
 
   private async sendUserControl(
-    eventType: number,
+    eventType: UserControlEventType,
     data: Buffer,
   ): Promise<void> {
     const payload = Buffer.alloc(2 + data.length);
@@ -698,309 +841,103 @@ export class RtmpConnection {
     await this.sendMessage(MessageType.USER_CONTROL, 0, 0, 0, payload);
   }
 
-  private async sendMessage(
-    messageTypeId: number,
+  public async sendMessage(
+    messageTypeId: MessageType,
     messageStreamId: number,
     timestamp: number,
     extendedTimestamp: number,
     payload: Buffer,
   ): Promise<void> {
     if (!this.socket || this.state === ConnectionState.DISCONNECTED) {
+      this.log(`[RTMP Connection] Cannot send message - not connected`);
       return;
     }
 
-    const header = Buffer.alloc(12);
-    const chunkStreamId = 3;
-    const chunkType = 0; // Type 0 - full header
+    if (!this.socket.isConnected()) {
+      this.log(`[RTMP Connection] Cannot send message - socket not connected`);
+      return;
+    }
 
-    // Basic header (chunk type 0, chunk stream ID)
-    header[0] = ((chunkType << 6) & 0xc0) | (chunkStreamId & 0x3f);
+    try {
+      const header = Buffer.alloc(12);
+      const chunkStreamId = 3;
+      const chunkType = 0; // Type 0 - full header
 
-    // Timestamp (3 bytes)
-    const actualTimestamp = timestamp || 0;
-    header[1] = (actualTimestamp >> 16) & 0xff;
-    header[2] = (actualTimestamp >> 8) & 0xff;
-    header[3] = actualTimestamp & 0xff;
+      // Basic header (chunk type 0, chunk stream ID)
+      header[0] = ((chunkType << 6) & 0xc0) | (chunkStreamId & 0x3f);
 
-    // Message length (3 bytes)
-    header[4] = (payload.length >> 16) & 0xff;
-    header[5] = (payload.length >> 8) & 0xff;
-    header[6] = payload.length & 0xff;
+      // Timestamp (3 bytes)
+      const actualTimestamp = timestamp || 0;
+      header[1] = (actualTimestamp >> 16) & 0xff;
+      header[2] = (actualTimestamp >> 8) & 0xff;
+      header[3] = actualTimestamp & 0xff;
 
-    // Message type ID
-    header[7] = messageTypeId;
+      // Message length (3 bytes)
+      header[4] = (payload.length >> 16) & 0xff;
+      header[5] = (payload.length >> 8) & 0xff;
+      header[6] = payload.length & 0xff;
 
-    // Message stream ID (4 bytes, little-endian)
-    header[8] = messageStreamId & 0xff;
-    header[9] = (messageStreamId >> 8) & 0xff;
-    header[10] = (messageStreamId >> 16) & 0xff;
-    header[11] = (messageStreamId >> 24) & 0xff;
+      // Message type ID
+      header[7] = messageTypeId;
 
-    // Combine header and payload
-    const message = Buffer.concat([header, payload]);
+      // Message stream ID (4 bytes, little-endian)
+      header[8] = messageStreamId & 0xff;
+      header[9] = (messageStreamId >> 8) & 0xff;
+      header[10] = (messageStreamId >> 16) & 0xff;
+      header[11] = (messageStreamId >> 24) & 0xff;
 
-    this.socket.write(message);
+      // Combine header and payload
+      const message = Buffer.concat([header, payload]);
+
+      this.socket.write(message);
+      this.updateBytesSent(message.length);
+      this.incrementPacketsSent();
+    } catch (error) {
+      this.handleError(error as Error, 'sendMessage');
+    }
   }
 
-  private extractAmfType(buffer: Buffer, index: number): any {
-    let offset = 0;
-    for (let i = 0; i <= index; i++) {
-      if (offset >= buffer.length) return null;
-
-      const type = buffer[offset];
-      offset += 1;
-
-      switch (type) {
-        case 0x00: // Number
-          offset += 8;
-          break;
-        case 0x01: // Boolean
-          offset += 1;
-          break;
-        case 0x02: // String
-          const strLen = buffer.readUInt16BE(offset);
-          offset += 2 + strLen;
-          break;
-        case 0x05: // Null
-          break;
-        case 0x03: // Object
-          // Skip all properties until we hit 0x00 0x00 0x09 (end of object)
-          while (offset < buffer.length) {
-            if (
-              buffer[offset] === 0x00 &&
-              buffer[offset + 1] === 0x00 &&
-              buffer[offset + 2] === 0x09
-            ) {
-              offset += 3;
-              break;
-            }
-            // Skip key length
-            offset += 2;
-            const keyLen = buffer.readUInt16BE(offset - 2);
-            offset += keyLen;
-            // Skip value
-            offset += this.getAmfLength(buffer, offset);
-          }
-          break;
-        case 0x0a: // Array
-          const arrayLen = buffer.readUInt32BE(offset);
-          offset += 4;
-          for (let j = 0; j < arrayLen; j++) {
-            offset += this.getAmfLength(buffer, offset);
-          }
-          break;
-        default:
-          break;
-      }
-    }
-
-    // Actually parse the value
-    offset = 0;
-    for (let i = 0; i <= index; i++) {
-      if (offset >= buffer.length) return null;
-
-      const type = buffer[offset];
-      offset += 1;
-
-      switch (type) {
-        case 0x00: {
-          // Number
-          const value = buffer.readDoubleBE(offset);
-          offset += 8;
-          if (i === index) return value;
-          break;
-        }
-        case 0x01: {
-          // Boolean
-          const value = buffer.readUInt8(offset) === 1;
-          offset += 1;
-          if (i === index) return value;
-          break;
-        }
-        case 0x02: {
-          // String
-          const strLen = buffer.readUInt16BE(offset);
-          offset += 2;
-          const value = buffer.toString("utf8", offset, offset + strLen);
-          offset += strLen;
-          if (i === index) return value;
-          break;
-        }
-        case 0x05: {
-          // Null
-          if (i === index) return null;
-          break;
-        }
-        case 0x03: {
-          // Object
-          if (i === index) {
-            const obj: any = {};
-            while (offset < buffer.length) {
-              if (
-                buffer[offset] === 0x00 &&
-                buffer[offset + 1] === 0x00 &&
-                buffer[offset + 2] === 0x09
-              ) {
-                offset += 3;
-                break;
-              }
-              const keyLen = buffer.readUInt16BE(offset);
-              offset += 2;
-              const key = buffer.toString("utf8", offset, offset + keyLen);
-              offset += keyLen;
-              obj[key] = this.extractAmfType(buffer, offset);
-              offset += this.getAmfLength(buffer, offset);
-            }
-            return obj;
-          }
-          // Skip object
-          while (offset < buffer.length) {
-            if (
-              buffer[offset] === 0x00 &&
-              buffer[offset + 1] === 0x00 &&
-              buffer[offset + 2] === 0x09
-            ) {
-              offset += 3;
-              break;
-            }
-            offset += 2;
-            const keyLen = buffer.readUInt16BE(offset - 2);
-            offset += keyLen;
-            offset += this.getAmfLength(buffer, offset);
-          }
-          break;
-        }
-        default:
-          break;
-      }
-    }
-
-    return null;
+  private extractAmfType(buffer: Buffer, index: number): AmfDataType {
+    return amf.parse(buffer, index);
   }
 
   private getAmfLength(buffer: Buffer, start: number): number {
-    if (start >= buffer.length) return 0;
-
-    const type = buffer[start];
-    let offset = 1;
-
-    switch (type) {
-      case 0x00: // Number
-        return offset + 8;
-      case 0x01: // Boolean
-        return offset + 1;
-      case 0x02: {
-        // String
-        const strLen = buffer.readUInt16BE(start + 1);
-        return offset + 2 + strLen;
-      }
-      case 0x05: // Null
-        return offset;
-      case 0x03: {
-        // Object
-        while (start + offset < buffer.length) {
-          if (
-            buffer[start + offset] === 0x00 &&
-            buffer[start + offset + 1] === 0x00 &&
-            buffer[start + offset + 2] === 0x09
-          ) {
-            return offset + 3;
-          }
-          offset += 2;
-          const keyLen = buffer.readUInt16BE(start + offset - 2);
-          offset += keyLen;
-          const valueLen = this.getAmfLength(buffer, start + offset);
-          offset += valueLen;
-        }
-        return buffer.length - start;
-      }
-      case 0x0a: {
-        // Array
-        const arrayLen = buffer.readUInt32BE(start + 1);
-        offset += 4;
-        for (let i = 0; i < arrayLen; i++) {
-          offset += this.getAmfLength(buffer, start + offset);
-        }
-        return offset;
-      }
-      default:
-        return 0;
-    }
+    return amf.getLength(buffer, start);
   }
 
   private serializeItem(item: unknown): Buffer {
-    if (typeof item === "number") {
-      const buffer = Buffer.alloc(1 + 8);
-      buffer[0] = 0x00; // Number
-      buffer.writeDoubleBE(item, 1);
-      return buffer;
-    } else if (typeof item === "string") {
-      const buffer = Buffer.alloc(3 + Buffer.byteLength(item));
-      buffer[0] = 0x02; // String
-      buffer.writeUInt16BE(Buffer.byteLength(item), 1);
-      buffer.write(item, 3);
-      return buffer;
-    } else if (typeof item === "boolean") {
-      const buffer = Buffer.alloc(2);
-      buffer[0] = 0x01; // Boolean
-      buffer[1] = item ? 0x01 : 0x00;
-      return buffer;
-    } else if (item === null || item === undefined) {
-      const buffer = Buffer.alloc(1);
-      buffer[0] = 0x05; // Null (or 0x06 for undefined)
-      return buffer;
-    } else if (Array.isArray(item)) {
-      const buffer = Buffer.alloc(1024);
-      buffer[0] = 0x0a; // Array
-      buffer.writeUInt32BE(item.length, 1);
-      let offset = 5;
-
-      for (const subItem of item) {
-        const serialized = this.serializeItem(subItem);
-        serialized.copy(buffer, offset);
-        offset += serialized.length;
-      }
-
-      return buffer.subarray(0, offset);
-    } else if (typeof item === "object") {
-      const buffer = Buffer.alloc(2048);
-      buffer[0] = 0x03; // Object
-      let offset = 1;
-
-      for (const [key, value] of Object.entries(item)) {
-        // Write key
-        const keyBuffer = Buffer.from(key, "utf8");
-        buffer.writeUInt16BE(keyBuffer.length, offset);
-        offset += 2;
-        keyBuffer.copy(buffer, offset);
-        offset += keyBuffer.length;
-
-        // Write value
-        const valueBuffer = this.serializeItem(value);
-        valueBuffer.copy(buffer, offset);
-        offset += valueBuffer.length;
-      }
-
-      // End of object
-      buffer.writeUInt16BE(0, offset);
-      offset += 3;
-
-      return buffer.subarray(0, offset);
-    }
-
-    return Buffer.alloc(0);
+    return amf.serialize(item);
   }
 
   public async disconnect(reason: string): Promise<void> {
+    if (this.state === ConnectionState.DISCONNECTED) return;
+
     this.state = ConnectionState.DISCONNECTED;
     this.handlers.onDisconnect(this, reason);
 
     if (this.socket) {
-      this.socket.destroy();
+      try {
+        this.socket.destroy();
+      } catch (error) {
+        this.log(`[RTMP Connection] Error destroying socket: ${error}`);
+      }
       this.socket = null;
     }
 
     this.buffer = Buffer.alloc(0);
+    this.handshakeBuffer = Buffer.alloc(0);
+  }
+
+  private handleError(error: Error, context: string): void {
+    this.log(`[RTMP Connection] Error in ${context}: ${error.message}`);
+    this.handlers.onError(error, this);
+
+    // For critical errors, disconnect
+    if (error.message.includes('Invalid RTMP') ||
+        error.message.includes('handshake failed') ||
+        error.message.includes('socket')) {
+      this.disconnect(`Error: ${error.message}`);
+    }
   }
 
   private log(...messages: any[]): void {
@@ -1010,23 +947,14 @@ export class RtmpConnection {
   }
 }
 
-// Type guards for validation
-export const isRtmpPacket = (obj: unknown): obj is RtmpPacket => {
-  if (typeof obj !== "object" || obj === null) return false;
-  const packet = obj as any;
-
-  return (
-    typeof packet.timestamp === "number" &&
-    Buffer.isBuffer(packet.payload) &&
-    typeof packet.header === "object" &&
-    typeof packet.header.messageStreamId === "number"
-  );
-};
-
 // Connection factory
 export function createRtmpConnection(
-  config?: ConnectionConfig,
-  handlers?: RtmpEventHandlers,
+  config?: Partial<ConnectionConfig>,
+  handlers?: Partial<RtmpEventHandlers<RtmpConnection>>,
 ): RtmpConnection {
   return new RtmpConnection(config, handlers);
 }
+
+// Export types for external use
+export * from './types';
+export * from './socket.interface';
