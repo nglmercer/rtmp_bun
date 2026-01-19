@@ -705,17 +705,16 @@ export class RtmpConnection {
     extendedTimestamp: number,
     payload: Buffer,
   ): Promise<void> {
-    public async sendMessage(messageTypeId: number, messageStreamId: number, timestamp: number, extendedTimestamp: number, payload: Buffer): Promise<void> {
-      if (!this.socket || this.state === ConnectionState.DISCONNECTED) {
-        return;
-      }
+    if (!this.socket || this.state === ConnectionState.DISCONNECTED) {
+      return;
+    }
 
-      const header = Buffer.alloc(12);
-      const chunkStreamId = 3;
-      const chunkType = 0; // Type 0 - full header
+    const header = Buffer.alloc(12);
+    const chunkStreamId = 3;
+    const chunkType = 0; // Type 0 - full header
 
-      // Basic header (chunk type 0, chunk stream ID)
-      header[0] = ((chunkType << 6) & 0xc0) | (chunkStreamId & 0x3f);
+    // Basic header (chunk type 0, chunk stream ID)
+    header[0] = ((chunkType << 6) & 0xc0) | (chunkStreamId & 0x3f);
 
     // Timestamp (3 bytes)
     const actualTimestamp = timestamp || 0;
