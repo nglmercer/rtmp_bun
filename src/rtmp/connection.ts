@@ -20,6 +20,7 @@ import {
 } from './types';
 import { type HandshakeResult } from "../handshake/index";
 import { AmfUtility, amf } from './amf';
+import { parseChunkHeader, hasCompleteChunk, extractChunkPayload } from './parsers';
 
 /**
  * RTMP Connection Class with improved type safety and modular design
@@ -239,75 +240,50 @@ export class RtmpConnection implements RtmpConnectionInterface {
     }
   }
 
+  /**
+   * Parses RTMP chunk headers and extracts packet information
+   * @param buffer Buffer containing RTMP data
+   * @returns Object with header info and bytes consumed, or null if insufficient data
+   */
+  private parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesConsumed: number } | null {
+    return parseChunkHeader(buffer);
+  }
+
+  /**
+   * Processes RTMP packets from the buffer
+   * Handles chunked messages and reassembles complete packets
+   */
   private async processRTMPPackets(): Promise<void> {
     while (this.buffer.length > 0) {
-      // Try to read chunk header
-      if (this.buffer.length < 1) break;
+      // Parse chunk header
+      const headerResult = this.parseChunkHeader(this.buffer);
+      if (!headerResult) break;
 
-      const basicHeader = this.buffer[0];
-      const chunkStreamId = basicHeader & 0x3f;
-      const chunkType = (basicHeader >> 6) & 0x03;
+      const { header, bytesConsumed } = headerResult;
 
-      let bytesConsumed = 1;
-      let timestampDelta = 0;
-      let messageLength = 0;
-      let messageTypeId = 0;
-      let messageStreamId = 0;
-      let timestamp = 0;
-
-      // Parse based on chunk type
-      if (chunkType === 0) {
-        // Full header
-        if (this.buffer.length < 12) break;
-        timestamp = this.buffer.readUIntBE(1, 3);
-        messageLength = this.buffer.readUIntBE(4, 3);
-        messageTypeId = this.buffer.readUInt8(7);
-        messageStreamId = this.buffer.readUInt32LE(8);
-        bytesConsumed = 12;
-
-        // Extended timestamp
-        if (timestamp === 0xffffff) {
-          if (this.buffer.length < 16) break;
-          timestamp = this.buffer.readUInt32BE(12);
-          timestampDelta = 0;
-          bytesConsumed = 16;
-        }
-      } else {
-        // Type 1, 2, 3 - relative timestamp
-        if (chunkType === 1) {
-          if (this.buffer.length < 4) break;
-          timestampDelta = this.buffer.readUIntBE(1, 3);
-          bytesConsumed = 4;
-        } else if (chunkType === 2) {
-          if (this.buffer.length < 3) break;
-          timestampDelta = this.buffer.readUIntBE(1, 2);
-          bytesConsumed = 3;
-        } else {
-          // Type 3 - no header
-          bytesConsumed = 1;
-        }
+      // Check if we have the complete message payload
+      if (this.buffer.length < bytesConsumed + header.messageLength) {
+        break;
       }
 
-      if (this.buffer.length < bytesConsumed) break;
+      // Extract payload
+      const payload = this.buffer.subarray(
+        bytesConsumed,
+        bytesConsumed + header.messageLength,
+      );
 
-      const header: RtmpHeader = {
-        timestamp: timestamp || timestampDelta,
-        messageLength,
-        messageTypeId,
-        messageStreamId,
-        chunkStreamId,
-        extendedTimestamp: timestamp >= 0xffffff,
-      };
-
+      // Create packet
       const packet: RtmpPacket = {
         header,
-        payload: this.buffer.subarray(bytesConsumed, bytesConsumed + messageLength),
-        timestamp: timestamp || timestampDelta,
+        payload,
+        timestamp: header.timestamp,
       };
 
-      this.buffer = this.buffer.subarray(bytesConsumed + messageLength);
+      // Remove processed data from buffer
+      this.buffer = this.buffer.subarray(bytesConsumed + header.messageLength);
       this.incrementPacketsReceived();
 
+      // Process the complete packet
       await this.processMessage(packet);
     }
   }
@@ -797,37 +773,24 @@ export class RtmpConnection implements RtmpConnectionInterface {
     );
   }
 
+  /**
+   * Sends a createStream result response using AMF serialization
+   * @param streamId The created stream ID
+   * @param transactionId The transaction ID from the client request
+   */
   private async sendCreateStreamResult(
     streamId: number,
     transactionId: any,
   ): Promise<void> {
-    const buffer = Buffer.alloc(128);
-    let offset = 0;
+    // Use AMF serialization for cleaner, more maintainable code
+    const result = amf.serialize([
+      "result",           // Command name
+      transactionId,      // Transaction ID
+      null,               // Command object
+      streamId,           // Stream ID
+    ]);
 
-    // AMF0 encoded result
-    buffer.writeUInt8(0x02, offset); // String
-    offset += 1;
-    buffer.writeUInt16BE(6, offset); // "result".length
-    offset += 2;
-    buffer.write("result", 6, offset);
-    offset += 6;
-
-    // Transaction ID (number)
-    const transactionIdBuffer = this.serializeItem(transactionId);
-    transactionIdBuffer.copy(buffer, offset);
-    offset += transactionIdBuffer.length;
-
-    // Command object (null)
-    buffer.writeUInt8(0x05, offset); // Null
-    offset += 1;
-
-    // Stream ID (number)
-    const streamIdBuffer = this.serializeItem(streamId);
-    streamIdBuffer.copy(buffer, offset);
-    offset += streamIdBuffer.length;
-
-    const payload = buffer.subarray(0, offset);
-    await this.sendMessage(MessageType.COMMAND_AMF0, 0, 0, 0, payload);
+    await this.sendMessage(MessageType.COMMAND_AMF0, 0, 0, 0, result);
   }
 
   private async sendUserControl(
@@ -841,6 +804,14 @@ export class RtmpConnection implements RtmpConnectionInterface {
     await this.sendMessage(MessageType.USER_CONTROL, 0, 0, 0, payload);
   }
 
+  /**
+   * Sends an RTMP message with proper chunking support
+   * @param messageTypeId Type of RTMP message
+   * @param messageStreamId Stream ID for the message
+   * @param timestamp Timestamp for the message
+   * @param extendedTimestamp Extended timestamp flag
+   * @param payload Message payload
+   */
   public async sendMessage(
     messageTypeId: MessageType,
     messageStreamId: number,
@@ -859,42 +830,126 @@ export class RtmpConnection implements RtmpConnectionInterface {
     }
 
     try {
-      const header = Buffer.alloc(12);
-      const chunkStreamId = 3;
-      const chunkType = 0; // Type 0 - full header
-
-      // Basic header (chunk type 0, chunk stream ID)
-      header[0] = ((chunkType << 6) & 0xc0) | (chunkStreamId & 0x3f);
-
-      // Timestamp (3 bytes)
-      const actualTimestamp = timestamp || 0;
-      header[1] = (actualTimestamp >> 16) & 0xff;
-      header[2] = (actualTimestamp >> 8) & 0xff;
-      header[3] = actualTimestamp & 0xff;
-
-      // Message length (3 bytes)
-      header[4] = (payload.length >> 16) & 0xff;
-      header[5] = (payload.length >> 8) & 0xff;
-      header[6] = payload.length & 0xff;
-
-      // Message type ID
-      header[7] = messageTypeId;
-
-      // Message stream ID (4 bytes, little-endian)
-      header[8] = messageStreamId & 0xff;
-      header[9] = (messageStreamId >> 8) & 0xff;
-      header[10] = (messageStreamId >> 16) & 0xff;
-      header[11] = (messageStreamId >> 24) & 0xff;
-
-      // Combine header and payload
-      const message = Buffer.concat([header, payload]);
-
-      this.socket.write(message);
-      this.updateBytesSent(message.length);
-      this.incrementPacketsSent();
+      // Check if message needs chunking
+      if (payload.length > this.config.chunkSize) {
+        await this.sendChunkedMessage(messageTypeId, messageStreamId, timestamp, extendedTimestamp, payload);
+      } else {
+        await this.sendSingleChunk(messageTypeId, messageStreamId, timestamp, extendedTimestamp, payload);
+      }
     } catch (error) {
       this.handleError(error as Error, 'sendMessage');
     }
+  }
+
+  /**
+   * Sends a single RTMP chunk (no chunking needed)
+   */
+  private async sendSingleChunk(
+    messageTypeId: MessageType,
+    messageStreamId: number,
+    timestamp: number,
+    extendedTimestamp: number,
+    payload: Buffer,
+  ): Promise<void> {
+    if (!this.socket) {
+      throw new Error("Socket is not available");
+    }
+
+    const header = Buffer.alloc(12);
+    const chunkStreamId = 3;
+    const chunkType = 0; // Type 0 - full header
+
+    // Basic header (chunk type 0, chunk stream ID)
+    header[0] = ((chunkType << 6) & 0xc0) | (chunkStreamId & 0x3f);
+
+    // Timestamp (3 bytes)
+    const actualTimestamp = timestamp || 0;
+    header[1] = (actualTimestamp >> 16) & 0xff;
+    header[2] = (actualTimestamp >> 8) & 0xff;
+    header[3] = actualTimestamp & 0xff;
+
+    // Message length (3 bytes)
+    header[4] = (payload.length >> 16) & 0xff;
+    header[5] = (payload.length >> 8) & 0xff;
+    header[6] = payload.length & 0xff;
+
+    // Message type ID
+    header[7] = messageTypeId;
+
+    // Message stream ID (4 bytes, little-endian)
+    header[8] = messageStreamId & 0xff;
+    header[9] = (messageStreamId >> 8) & 0xff;
+    header[10] = (messageStreamId >> 16) & 0xff;
+    header[11] = (messageStreamId >> 24) & 0xff;
+
+    // Combine header and payload
+    const message = Buffer.concat([header, payload]);
+
+    this.socket.write(message);
+    this.updateBytesSent(message.length);
+    this.incrementPacketsSent();
+  }
+
+  /**
+   * Sends a message that needs to be chunked into multiple RTMP chunks
+   */
+  private async sendChunkedMessage(
+    messageTypeId: MessageType,
+    messageStreamId: number,
+    timestamp: number,
+    extendedTimestamp: number,
+    payload: Buffer,
+  ): Promise<void> {
+    if (!this.socket) {
+      throw new Error("Socket is not available");
+    }
+
+    const chunkStreamId = 3;
+    let offset = 0;
+
+    // Send first chunk with full header (Type 0)
+    const firstChunkHeader = Buffer.alloc(12);
+    firstChunkHeader[0] = ((0 << 6) & 0xc0) | (chunkStreamId & 0x3f);
+    
+    const actualTimestamp = timestamp || 0;
+    firstChunkHeader[1] = (actualTimestamp >> 16) & 0xff;
+    firstChunkHeader[2] = (actualTimestamp >> 8) & 0xff;
+    firstChunkHeader[3] = actualTimestamp & 0xff;
+    
+    firstChunkHeader[4] = (payload.length >> 16) & 0xff;
+    firstChunkHeader[5] = (payload.length >> 8) & 0xff;
+    firstChunkHeader[6] = payload.length & 0xff;
+    firstChunkHeader[7] = messageTypeId;
+    firstChunkHeader[8] = messageStreamId & 0xff;
+    firstChunkHeader[9] = (messageStreamId >> 8) & 0xff;
+    firstChunkHeader[10] = (messageStreamId >> 16) & 0xff;
+    firstChunkHeader[11] = (messageStreamId >> 24) & 0xff;
+
+    const firstChunkSize = Math.min(this.config.chunkSize, payload.length);
+    const firstChunk = Buffer.concat([firstChunkHeader, payload.subarray(0, firstChunkSize)]);
+    
+    this.socket.write(firstChunk);
+    this.updateBytesSent(firstChunk.length);
+    this.incrementPacketsSent();
+    
+    offset = firstChunkSize;
+
+    // Send remaining chunks with Type 3 header (no timestamp, no message length, no message type)
+    while (offset < payload.length) {
+      const chunkSize = Math.min(this.config.chunkSize, payload.length - offset);
+      const chunkHeader = Buffer.alloc(1);
+      chunkHeader[0] = ((3 << 6) & 0xc0) | (chunkStreamId & 0x3f);
+
+      const chunk = Buffer.concat([chunkHeader, payload.subarray(offset, offset + chunkSize)]);
+      
+      this.socket.write(chunk);
+      this.updateBytesSent(chunk.length);
+      this.incrementPacketsSent();
+      
+      offset += chunkSize;
+    }
+
+    this.log(`[RTMP Connection] Sent chunked message: ${payload.length} bytes in ${Math.ceil(payload.length / this.config.chunkSize)} chunks`);
   }
 
   private extractAmfType(buffer: Buffer, index: number): AmfDataType {

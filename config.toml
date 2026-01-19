@@ -51,6 +51,3 @@ id = "custom"
 url = "rtmp://your-custom-server.com"
 key = "optional-key"
 enabled = false
-```
-
-The file has been created. Now let me create the bartok tests for the handshake module:

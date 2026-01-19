@@ -23,6 +23,122 @@ export enum AmfType {
  */
 export class AmfParser {
   /**
+   * Parse AMF value at specific offset in buffer
+   * @param buffer Buffer containing AMF data
+   * @param offset Starting offset
+   * @returns Tuple of [parsed value, new offset]
+   */
+  private parseAmfValue(buffer: Buffer, offset: number): [AmfDataType, number] {
+    if (offset >= buffer.length) return [null, offset];
+
+    const type = buffer[offset];
+    offset += 1;
+
+    switch (type) {
+      case AmfType.NUMBER: {
+        // Number
+        if (offset + 8 > buffer.length) return [null, offset - 1];
+        const value = buffer.readDoubleBE(offset);
+        offset += 8;
+        return [value, offset];
+      }
+      case AmfType.BOOLEAN: {
+        // Boolean
+        if (offset + 1 > buffer.length) return [null, offset];
+        const value = buffer.readUInt8(offset) === 1;
+        offset += 1;
+        return [value, offset];
+      }
+      case AmfType.STRING: {
+        // String
+        if (offset + 2 > buffer.length) return [null, offset];
+        const strLen = buffer.readUInt16BE(offset);
+        offset += 2;
+        if (offset + strLen > buffer.length) return [null, offset];
+        const value = buffer.toString("utf8", offset, offset + strLen);
+        offset += strLen;
+        return [value, offset];
+      }
+      case AmfType.NULL: {
+        // Null
+        return [null, offset];
+      }
+      case AmfType.OBJECT: {
+        // Object
+        const obj: AmfObject = {};
+        while (offset < buffer.length) {
+          if (
+            buffer[offset] === 0x00 &&
+            buffer[offset + 1] === 0x00 &&
+            buffer[offset + 2] === AmfType.OBJECT_END
+          ) {
+            offset += 3;
+            break;
+          }
+          if (offset + 2 > buffer.length) {
+            // Malformed object - no proper end marker
+            return [null, offset];
+          }
+          const keyLen = buffer.readUInt16BE(offset);
+          offset += 2;
+          if (offset + keyLen > buffer.length) {
+            // Malformed object - key length exceeds buffer
+            return [null, offset];
+          }
+          const key = buffer.toString("utf8", offset, offset + keyLen);
+          offset += keyLen;
+
+          // Check if we have enough data for a value
+          if (offset >= buffer.length) {
+            // Malformed object - key without value
+            return [null, offset];
+          }
+
+          // Parse the value at current offset
+          const [value, newOffset] = this.parseAmfValue(buffer, offset);
+          if (value === null && newOffset === offset) {
+            // No value was parsed, this is malformed
+            return [null, offset];
+          }
+          // If we couldn't parse a value (returned null but offset didn't advance), it's malformed
+          if (value === null && newOffset > offset) {
+            // Successfully parsed null value
+            offset = newOffset;
+            obj[key] = value;
+          } else if (value !== null) {
+            // Successfully parsed a value
+            offset = newOffset;
+            obj[key] = value;
+          } else {
+            // Malformed - couldn't parse value
+            return [null, offset];
+          }
+        }
+        return [obj, offset];
+      }
+      case AmfType.ARRAY: {
+        // Array
+        if (offset + 4 > buffer.length) return [null, offset];
+        const arrayLen = buffer.readUInt32BE(offset);
+        offset += 4;
+        const arr: AmfDataType[] = [];
+
+        for (let j = 0; j < arrayLen; j++) {
+          if (offset >= buffer.length) break;
+
+          // Parse value recursively
+          const [value, newOffset] = this.parseAmfValue(buffer, offset);
+          offset = newOffset;
+          arr.push(value);
+        }
+        return [arr, offset];
+      }
+      default:
+        return [null, offset];
+    }
+  }
+
+  /**
    * Extract AMF data type from buffer at specified index
    * @param buffer Buffer containing AMF data
    * @param index Index of the AMF item to extract
@@ -60,12 +176,23 @@ export class AmfParser {
               offset += 3;
               break;
             }
-            // Skip key length
+            if (offset + 2 > buffer.length) {
+              // Malformed - no proper end marker
+              return null;
+            }
+            const keyLen = buffer.readUInt16BE(offset);
             offset += 2;
-            const keyLen = buffer.readUInt16BE(offset - 2);
+            if (offset + keyLen > buffer.length) {
+              // Malformed - key length exceeds buffer
+              return null;
+            }
             offset += keyLen;
-            // Skip value
-            offset += this.getAmfLength(buffer, offset);
+            const valueLen = this.getAmfLength(buffer, offset);
+            if (valueLen === 0 && offset < buffer.length) {
+              // Malformed - no value
+              return null;
+            }
+            offset += valueLen;
           }
           break;
         case AmfType.ARRAY: // Array
@@ -121,181 +248,50 @@ export class AmfParser {
           if (i === index) return null;
           break;
         }
-        case AmfType.OBJECT: {
-          // Object
-          if (i === index) {
-            const obj: AmfObject = {};
-            while (offset < buffer.length) {
-              if (
-                buffer[offset] === 0x00 &&
-                buffer[offset + 1] === 0x00 &&
-                buffer[offset + 2] === AmfType.OBJECT_END
-              ) {
-                offset += 3;
-                break;
-              }
-              if (offset + 2 > buffer.length) break;
-              const keyLen = buffer.readUInt16BE(offset);
-              offset += 2;
-              if (offset + keyLen > buffer.length) break;
-              const key = buffer.toString("utf8", offset, offset + keyLen);
-              offset += keyLen;
-
-              // Parse the value at current offset
-              if (offset >= buffer.length) break;
-              const valueType = buffer[offset];
-              let value: AmfDataType = null;
-
-              switch (valueType) {
-                case AmfType.NUMBER:
-                  if (offset + 9 > buffer.length) break;
-                  value = buffer.readDoubleBE(offset + 1);
-                  offset += 9;
-                  break;
-                case AmfType.BOOLEAN:
-                  if (offset + 2 > buffer.length) break;
-                  value = buffer.readUInt8(offset + 1) === 1;
-                  offset += 2;
-                  break;
-                case AmfType.STRING:
-                  if (offset + 3 > buffer.length) break;
-                  const strLen = buffer.readUInt16BE(offset + 1);
-                  if (offset + 3 + strLen > buffer.length) break;
-                  value = buffer.toString("utf8", offset + 3, offset + 3 + strLen);
-                  offset += 3 + strLen;
-                  break;
-                case AmfType.NULL:
-                  value = null;
-                  offset += 1;
-                  break;
-                default:
-                  // Skip unknown types
-                  const len = this.getAmfLength(buffer, offset);
-                  offset += len;
-                  break;
-              }
-              obj[key] = value;
-            }
-            return obj;
+      case AmfType.OBJECT: {
+        // Object
+        if (i === index) {
+          const [obj, newOffset] = this.parseAmfValue(buffer, offset - 1);
+          // Check if the object was successfully parsed
+          if (obj === null && newOffset === offset - 1) {
+            return null;
           }
-          // Skip object
-          while (offset < buffer.length) {
-            if (
-              buffer[offset] === 0x00 &&
-              buffer[offset + 1] === 0x00 &&
-              buffer[offset + 2] === AmfType.OBJECT_END
-            ) {
-              offset += 3;
-              break;
-            }
-            offset += 2;
-            const keyLen = buffer.readUInt16BE(offset - 2);
-            offset += keyLen;
-            offset += this.getAmfLength(buffer, offset);
-          }
-          break;
+          return obj;
         }
+        // Skip object
+        while (offset < buffer.length) {
+          if (
+            buffer[offset] === 0x00 &&
+            buffer[offset + 1] === 0x00 &&
+            buffer[offset + 2] === AmfType.OBJECT_END
+          ) {
+            offset += 3;
+            break;
+          }
+          if (offset + 2 > buffer.length) {
+            // Malformed - no proper end marker
+            return null;
+          }
+          const keyLen = buffer.readUInt16BE(offset);
+          offset += 2;
+          if (offset + keyLen > buffer.length) {
+            // Malformed - key length exceeds buffer
+            return null;
+          }
+          offset += keyLen;
+          const valueLen = this.getAmfLength(buffer, offset);
+          if (valueLen === 0 && offset < buffer.length) {
+            // Malformed - no value
+            return null;
+          }
+          offset += valueLen;
+        }
+        break;
+      }
         case AmfType.ARRAY: {
           // Array
           if (i === index) {
-            if (offset + 4 > buffer.length) return null;
-            const arrayLen = buffer.readUInt32BE(offset);
-            offset += 4;
-            const arr: AmfDataType[] = [];
-
-            for (let j = 0; j < arrayLen; j++) {
-              if (offset >= buffer.length) break;
-
-              const valueType = buffer[offset];
-              let value: AmfDataType = null;
-
-              switch (valueType) {
-                case AmfType.NUMBER:
-                  if (offset + 9 > buffer.length) break;
-                  value = buffer.readDoubleBE(offset + 1);
-                  offset += 9;
-                  break;
-                case AmfType.BOOLEAN:
-                  if (offset + 2 > buffer.length) break;
-                  value = buffer.readUInt8(offset + 1) === 1;
-                  offset += 2;
-                  break;
-                case AmfType.STRING:
-                  if (offset + 3 > buffer.length) break;
-                  const strLen = buffer.readUInt16BE(offset + 1);
-                  if (offset + 3 + strLen > buffer.length) break;
-                  value = buffer.toString("utf8", offset + 3, offset + 3 + strLen);
-                  offset += 3 + strLen;
-                  break;
-                case AmfType.NULL:
-                  value = null;
-                  offset += 1;
-                  break;
-                case AmfType.OBJECT:
-                  // Parse nested object
-                  if (offset + 1 > buffer.length) break;
-                  const nestedObj: AmfObject = {};
-                  offset += 1; // Skip object type byte
-
-                  while (offset < buffer.length) {
-                    if (
-                      buffer[offset] === 0x00 &&
-                      buffer[offset + 1] === 0x00 &&
-                      buffer[offset + 2] === AmfType.OBJECT_END
-                    ) {
-                      offset += 3;
-                      break;
-                    }
-                    if (offset + 2 > buffer.length) break;
-                    const keyLen = buffer.readUInt16BE(offset);
-                    offset += 2;
-                    if (offset + keyLen > buffer.length) break;
-                    const key = buffer.toString("utf8", offset, offset + keyLen);
-                    offset += keyLen;
-
-                    if (offset >= buffer.length) break;
-                    const nestedValueType = buffer[offset];
-                    let nestedValue: AmfDataType = null;
-
-                    switch (nestedValueType) {
-                      case AmfType.NUMBER:
-                        if (offset + 9 > buffer.length) break;
-                        nestedValue = buffer.readDoubleBE(offset + 1);
-                        offset += 9;
-                        break;
-                      case AmfType.BOOLEAN:
-                        if (offset + 2 > buffer.length) break;
-                        nestedValue = buffer.readUInt8(offset + 1) === 1;
-                        offset += 2;
-                        break;
-                      case AmfType.STRING:
-                        if (offset + 3 > buffer.length) break;
-                        const nestedStrLen = buffer.readUInt16BE(offset + 1);
-                        if (offset + 3 + nestedStrLen > buffer.length) break;
-                        nestedValue = buffer.toString("utf8", offset + 3, offset + 3 + nestedStrLen);
-                        offset += 3 + nestedStrLen;
-                        break;
-                      case AmfType.NULL:
-                        nestedValue = null;
-                        offset += 1;
-                        break;
-                      default:
-                        const len = this.getAmfLength(buffer, offset);
-                        offset += len;
-                        break;
-                    }
-                    nestedObj[key] = nestedValue;
-                  }
-                  value = nestedObj;
-                  break;
-                default:
-                  // Skip unknown types
-                  const len = this.getAmfLength(buffer, offset);
-                  offset += len;
-                  break;
-              }
-              arr.push(value);
-            }
+            const [arr] = this.parseAmfValue(buffer, offset - 1);
             return arr;
           }
           // Skip array
@@ -349,10 +345,22 @@ export class AmfParser {
           ) {
             return offset + 3;
           }
+          if (start + offset + 2 > buffer.length) {
+            // Malformed - no proper end marker
+            return buffer.length - start;
+          }
+          const keyLen = buffer.readUInt16BE(start + offset);
           offset += 2;
-          const keyLen = buffer.readUInt16BE(start + offset - 2);
+          if (start + offset + keyLen > buffer.length) {
+            // Malformed - key length exceeds buffer
+            return buffer.length - start;
+          }
           offset += keyLen;
           const valueLen = this.getAmfLength(buffer, start + offset);
+          if (valueLen === 0 && start + offset < buffer.length) {
+            // Malformed - no value
+            return buffer.length - start;
+          }
           offset += valueLen;
         }
         return buffer.length - start;
@@ -434,9 +442,10 @@ export class AmfSerializer {
         offset += valueBuffer.length;
       }
 
-      // End of object
+      // End of object marker: 0x00 0x00 0x09
       buffer.writeUInt16BE(0, offset);
-      offset += 3;
+      offset += 2;
+      buffer[offset++] = AmfType.OBJECT_END;
 
       return buffer.subarray(0, offset);
     }
