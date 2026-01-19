@@ -16,7 +16,9 @@ import {
   AmfDataType,
   AmfObject,
   RtmpConnectionInterface,
-  PartialConnectionConfig
+  PartialConnectionConfig,
+  RtmpCommandName,
+  RtmpStatusCode
 } from './types';
 import { type HandshakeResult } from "../handshake/index";
 import { AmfUtility, amf } from './amf';
@@ -106,7 +108,7 @@ export class RtmpConnection implements RtmpConnectionInterface {
    * Set the socket for this connection
    * @param socket Raw socket to be wrapped in adapter
    */
-  public setSocket(socket: any): void {
+  public setSocket(socket: unknown): void {
     this.socket = new GenericSocketAdapter(socket);
     this.updateLastActivity();
   }
@@ -454,34 +456,34 @@ export class RtmpConnection implements RtmpConnectionInterface {
       }
 
       switch (commandName) {
-        case "connect":
+        case RtmpCommandName.CONNECT:
           await this.handleConnect(transactionId, commandObject, extraData);
           break;
-        case "createStream":
+        case RtmpCommandName.CREATE_STREAM:
           await this.handleCreateStream(transactionId, commandObject, extraData);
           break;
-        case "publish":
+        case RtmpCommandName.PUBLISH:
           await this.handlePublish(transactionId, commandObject, extraData);
           break;
-        case "play":
+        case RtmpCommandName.PLAY:
           await this.handlePlay(transactionId, commandObject, extraData);
           break;
-        case "close":
+        case RtmpCommandName.CLOSE:
           await this.handleClose(transactionId, commandObject, extraData);
           break;
-        case "pause":
+        case RtmpCommandName.PAUSE:
           await this.handlePause(transactionId, commandObject, extraData);
           break;
-        case "seek":
+        case RtmpCommandName.SEEK:
           await this.handleSeek(transactionId, commandObject, extraData);
           break;
-        case "receiveVideo":
+        case RtmpCommandName.RECEIVE_VIDEO:
           await this.handleReceiveVideo(transactionId, commandObject, extraData);
           break;
-        case "receiveAudio":
+        case RtmpCommandName.RECEIVE_AUDIO:
           await this.handleReceiveAudio(transactionId, commandObject, extraData);
           break;
-        case "onStatus":
+        case RtmpCommandName.ON_STATUS:
           this.log(
             `[RTMP Connection] onStatus: ${JSON.stringify(commandObject)}`,
           );
@@ -500,8 +502,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handleConnect(
-    transactionId: any,
-    commandObject: any,
+    transactionId: AmfDataType,
+    commandObject: AmfDataType,
     extraData: Buffer,
   ): Promise<void> {
     this.log(
@@ -519,8 +521,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
       await this.setChunkSize(this.config.chunkSize);
 
       // Send onStatus event
-      await this.sendOnStatus("NetConnection.Connect.Success", {
-        code: "NetConnection.Connect.Success",
+      await this.sendOnStatus(RtmpStatusCode.NET_CONNECTION_CONNECT_SUCCESS, {
+        code: RtmpStatusCode.NET_CONNECTION_CONNECT_SUCCESS,
         level: "status",
         description: "Connection accepted",
       });
@@ -534,8 +536,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handleCreateStream(
-    transactionId: any,
-    commandObject: any,
+    transactionId: AmfDataType,
+    commandObject: AmfDataType,
     extraData: Buffer,
   ): Promise<void> {
     this.currentStreamId = this.currentStreamId + 1;
@@ -544,8 +546,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handlePublish(
-    transactionId: any,
-    commandObject: any,
+    transactionId: AmfDataType,
+    commandObject: AmfDataType,
     extraData: Buffer,
   ): Promise<void> {
     try {
@@ -560,8 +562,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
         `[RTMP Connection] Publish request: ${streamName}, type: ${publishingType}`,
       );
 
-      await this.sendOnStatus("NetStream.Publish.Start", {
-        code: "NetStream.Publish.Start",
+      await this.sendOnStatus(RtmpStatusCode.NET_STREAM_PUBLISH_START, {
+        code: RtmpStatusCode.NET_STREAM_PUBLISH_START,
         level: "status",
         description: `Started publishing stream: ${streamName}`,
         details: streamName,
@@ -574,8 +576,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handlePlay(
-    transactionId: any,
-    commandObject: any,
+    transactionId: AmfDataType,
+    commandObject: AmfDataType,
     extraData: Buffer,
   ): Promise<void> {
     try {
@@ -587,8 +589,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
 
       this.log(`[RTMP Connection] Play request: ${streamName}`);
 
-      await this.sendOnStatus("NetStream.Play.Start", {
-        code: "NetStream.Play.Start",
+      await this.sendOnStatus(RtmpStatusCode.NET_STREAM_PLAY_START, {
+        code: RtmpStatusCode.NET_STREAM_PLAY_START,
         level: "status",
         description: `Started playing stream: ${streamName}`,
       });
@@ -600,8 +602,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handleClose(
-    transactionId: any,
-    commandObject: any,
+    transactionId: AmfDataType,
+    commandObject: AmfDataType,
     extraData: Buffer,
   ): Promise<void> {
     this.log("[RTMP Connection] Close request");
@@ -609,8 +611,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handlePause(
-    transactionId: any,
-    commandObject: any,
+    transactionId: AmfDataType,
+    commandObject: AmfDataType,
     extraData: Buffer,
   ): Promise<void> {
     try {

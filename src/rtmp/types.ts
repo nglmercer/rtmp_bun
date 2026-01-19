@@ -120,6 +120,28 @@ export enum UserControlEventType {
   PING_RESPONSE = 7,
 }
 
+// RTMP Command Names (Magic Strings)
+export enum RtmpCommandName {
+  CONNECT = "connect",
+  CREATE_STREAM = "createStream",
+  PUBLISH = "publish",
+  PLAY = "play",
+  CLOSE = "close",
+  PAUSE = "pause",
+  SEEK = "seek",
+  RECEIVE_VIDEO = "receiveVideo",
+  RECEIVE_AUDIO = "receiveAudio",
+  ON_STATUS = "onStatus",
+  RESULT = "result",
+}
+
+// RTMP Status Codes
+export enum RtmpStatusCode {
+  NET_CONNECTION_CONNECT_SUCCESS = "NetConnection.Connect.Success",
+  NET_STREAM_PUBLISH_START = "NetStream.Publish.Start",
+  NET_STREAM_PLAY_START = "NetStream.Play.Start",
+}
+
 // Bandwidth Limit Types
 export enum BandwidthLimitType {
   HARD = 0,
