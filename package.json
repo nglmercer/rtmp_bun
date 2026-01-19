@@ -28,6 +28,9 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "@types/iarna__toml": "^2.0.5",
+    "arktype": "^2.1.29",
     "ffmpeg-lib": "^1.1.5"
   }
 }

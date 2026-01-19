@@ -1,0 +1,56 @@
+# RTMP Server Configuration File
+# Uses TOML format for human-readable configuration
+# Fields are validated with arktype schemas
+
+[server]
+# Server networking
+port = 1935
+host = "0.0.0.0"
+
+# RTMP protocol settings
+chunkSize = 4096
+windowAckSize = 2500000
+peerBandwidth = 2500000
+
+# Logging configuration
+logLevel = "info"
+logFile = "./logs/rtmp.log"
+
+# REST API (optional)
+enableRestApi = true
+restApiPort = 3000
+
+# Connection settings
+timeoutMs = 10000
+maxConnections = 100
+enableRequests = true
+
+# Targets Configuration
+# List of RTMP destinations for stream forwarding
+
+[[targets]]
+id = "youtube"
+url = "rtmp://a.rtmp.youtube.com/live2"
+key = "your-youtube-stream-key-here"
+enabled = false
+
+[[targets]]
+id = "twitch"
+url = "rtmp://live.twitch.tv/app"
+key = "your-twitch-stream-key-here"
+enabled = false
+
+[[targets]]
+id = "facebook"
+url = "rtmps://live-api-s.facebook.com:443/rtmp"
+key = "your-facebook-stream-key-here"
+enabled = false
+
+[[targets]]
+id = "custom"
+url = "rtmp://your-custom-server.com"
+key = "optional-key"
+enabled = false
+```
+
+The file has been created. Now let me create the bartok tests for the handshake module:

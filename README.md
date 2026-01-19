@@ -1,270 +1,364 @@
 # RTMP Bun Server
 
-Un servidor RTMP backend construido con Bun para reenviar streams a múltiples servicios como YouTube, Twitch, Facebook, etc.
+A high-performance RTMP streaming server built with Bun, featuring arktype validation, TOML configuration, and comprehensive handshake protocol implementation.
 
-## 🎯 Estado del Proyecto: en pruebas
+## Features
 
-Este proyecto Incluye:
-- ✅ Servidor RTMP completo con soporte para publicación de streams
-- ✅ Reenvío automático a múltiples plataformas simultáneamente
-- ✅ API REST completa para configuración y monitoreo
-- ✅ Sistema de logging detallado
-- ✅ Documentación completa
+- **RTMP Protocol**: Complete RTMP (Real-Time Messaging Protocol) server implementation
+- **Validation**: Arktype validation for all configuration with runtime type safety
+- **Configuration**: TOML-based configuration with auto-reload support
+- **Handshake**: Complete RTMP handshake implementation with proper protocol support
+- **REST API**: Built-in REST API for server metrics and configuration management
+- **Stream Forwarding**: Support for forwarding streams to multiple targets (YouTube, Twitch, Facebook, Custom)
+- **Testing**: Comprehensive bun:test unit tests
 
-## 🚀 Características
+## Project Structure
 
-- Servidor RTMP completo con soporte para publicación de streams
-- Reenvío automático a múltiples plataformas simultáneamente
-- API REST para configuración y monitoreo
-- Configuración mediante archivo JSON
-- Logging detallado de conexiones y streams
-- Soporte para streams clave personalizados
-- Interface web de administración (via API)
-
-## 📋 Requisitos
-
-- [Bun](https://bun.sh/) runtime instalado
-- Node.js 18+ (para tipos TypeScript)
-
-## 🛠️ Instalación
-
-1. Clona el repositorio:
-```bash
-git clone <repository-url>
-cd rtmp_bun
+```
+rtmp_bun/
+├── src/
+│   ├── config/
+│   │   ├── loader.ts       # TOML/JSON config loader with arktype validation
+│   │   └── schemas.ts      # Arktype validation schemas
+│   ├── handshake/
+│   │   └── index.ts        # RTMP handshake protocol implementation
+│   ├── rtmp/
+│   │   └── connection.ts   # RTMP connection handler with packet parsing
+│   └── main.ts             # Main RTMP server entry point
+├── test/
+│   ├── handshake.test.ts   # Handshake module tests
+│   └── config.test.ts      # Configuration module tests
+├── config.toml             # Main configuration file
+└── config.json             # Alternative JSON configuration
 ```
 
-2. Instala dependencias:
+## Installation
+
 ```bash
+# Install dependencies
 bun install
 ```
 
-## ⚙️ Configuración
+## Usage
 
-El servidor usa un archivo `config.json` para la configuración. Si no existe, se crearán valores por defecto.
+### Quick Start
 
-### Ejemplo de configuración:
+```bash
+# Run the development server
+bun run dev
 
-```json
-{
-  "server": {
-    "port": 1935,
-    "host": "0.0.0.0",
-    "chunkSize": 4096,
-    "windowAckSize": 2500000,
-    "peerBandwidth": 2500000,
-    "logLevel": "info",
-    "logFile": "./logs/rtmp.log",
-    "enableRestApi": true,
-    "restApiPort": 3000
-  },
-  "targets": [
-    {
-      "id": "youtube",
-      "url": "rtmp://a.rtmp.youtube.com/live2",
-      "key": "YOUTUBE_STREAM_KEY",
-      "enabled": true
-    },
-    {
-      "id": "twitch",
-      "url": "rtmp://live.twitch.tv/app",
-      "key": "TWITCH_STREAM_KEY",
-      "enabled": true
-    }
-  ]
+# Run the production server
+bun run start
+
+# Run tests
+bun run test
+
+# Type checking
+bun run typecheck
+
+# Linting
+bun run lint
+```
+
+### Configuration
+
+Create a `config.toml` file in the project root:
+
+```toml
+[server]
+port = 1935
+host = "0.0.0.0"
+
+# RTMP protocol settings
+chunkSize = 4096
+windowAckSize = 2500000
+peerBandwidth = 2500000
+
+# Logging
+logLevel = "info"
+logFile = "./logs/rtmp.log"
+
+# REST API (optional)
+enableRestApi = true
+restApiPort = 3000
+
+# Connection settings
+timeoutMs = 10000
+maxConnections = 100
+enableRequests = true
+
+# Stream Targets (RTMP destinations)
+[[targets]]
+id = "youtube"
+url = "rtmp://a.rtmp.youtube.com/live2"
+key = "your-youtube-stream-key"
+enabled = false
+
+[[targets]]
+id = "twitch"
+url = "rtmp://live.twitch.tv/app"
+key = "your-twitch-stream-key"
+enabled = false
+
+[[targets]]
+id = "facebook"
+url = "rtmps://live-api-s.facebook.com:443/rtmp"
+key = "your-facebook-stream-key"
+enabled = false
+```
+
+### Using the Configuration Loader
+
+```typescript
+import { ConfigLoader, loadConfig, createDefaultConfigFile } from "./src/config/loader";
+import { createDefaultConfig } from "./src/config/schemas";
+
+// Load configuration
+const config = await loadConfig({ configPath: "./config.toml" });
+
+// Create a default config file
+await createDefaultConfigFile("./config.toml", "toml");
+
+// Use ConfigLoader for advanced features (auto-reload, validation)
+const loader = new ConfigLoader({
+    configPath: "./config.toml",
+    watch: true,  // Auto-reload on config changes
+    format: "auto"  // Detect JSON/TOML by extension
+});
+
+// Listen for config updates
+loader.onUpdate((newConfig) => {
+    console.log("Configuration updated:", newConfig.server.port);
+});
+
+await loader.load();
+```
+
+### Using the Handshake Module
+
+```typescript
+import { RtmpHandshake, RtmpServerHandshake, performHandshakeSimulation } from "./src/handshake/index";
+
+// Create client-side handshake
+const client = new RtmpHandshake();
+const c0c1 = client.generateClientHandshake();
+
+// Create server-side handshake
+const server = new RtmpServerHandshake();
+const s0s1s2 = server.generateServerResponse(c0c1);
+
+// Process server response and generate C2
+const c2 = client.generateC2(s0s1s2.subarray(1, 1537));
+
+// Or use the simulation helper
+const handshakeResult = await performHandshakeSimulation(client, server);
+if (handshakeResult.success) {
+    console.log("Handshake completed");
 }
 ```
 
-## 🚀 Ejecución
+### RTMP Connection Handling
 
-### Desarrollo (con recarga automática):
+```typescript
+import { RtmpConnection } from "./src/rtmp/connection";
+
+const connection = new RtmpConnection(
+    // Configuration
+    {
+        chunkSize: 4096,
+        windowAckSize: 2500000,
+        peerBandwidth: 2500000
+    },
+    // Event handlers
+    {
+        onConnect: (client) => console.log("Connected"),
+        onDisconnect: (client, reason) => console.log("Disconnected:", reason),
+        onMessage: (message, client) => console.log("Message:", message.type),
+        onStreamPublishStart: (streamName, client) => console.log("Publish started:", streamName),
+        onStreamPlayStart: (streamName, client) => console.log("Play started:", streamName)
+    }
+);
+```
+
+### Using the RTMP Server
+
+```typescript
+import RTMPServer from "./src/main";
+
+const server = new RTMPServer({
+    configPath: "./config.toml",
+    watchConfig: true,  // Watch for config changes
+    autoStart: false
+});
+
+// Load configuration
+await server.loadConfig();
+
+// Start the server
+await server.start();
+
+// Get server stats
+console.log(server.getStats());
+// { running: true, connections: 2, config: {...} }
+
+// Update targets dynamically
+await server.updateTargets([
+    {
+        id: "custom",
+        url: "rtmp://your-server.com",
+        key: "stream-key",
+        enabled: true
+    }
+]);
+
+// Stop the server
+await server.stop();
+```
+
+## Testing
+
+The project includes comprehensive unit tests for the handshake and configuration modules.
+
 ```bash
-bun run dev
+# Run all tests
+bun test
+
+# Run specific test file
+bun test test/handshake.test.ts
+
+# Run with coverage (if supported by bun test)
+bun test --coverage
 ```
 
-### Producción:
+### Test Coverage
+
+- **Handshake Module**:
+  - Shared secret generation
+  - Digest creation and validation
+  - C0, C1, C2 packet generation
+  - Server response processing
+  - State management
+  - Error handling
+  - Complete handshake simulation
+
+- **Configuration Module**:
+  - Schema validation (arktype)
+  - TOML/JSON parsing
+  - Auto-reload watching
+  - File creation and saving
+  - Configuration updates
+  - Error handling
+
+## Validation with Arktype
+
+All configuration is validated using arktype schemas:
+
+```typescript
+import { rtmpConfigSchema, serverConfigSchema, targetConfigSchema } from "./src/config/schemas";
+
+// Validate server config
+const result = serverConfigSchema({
+    port: 1935,
+    host: "0.0.0.0",
+    chunkSize: 4096,
+    // ... more fields
+});
+
+if (result.problems) {
+    console.error("Validation failed:", result.problems);
+} else {
+    console.log("Valid config:", result.data);
+}
+```
+
+## Architecture
+
+### Configuration Layer
+- **loader.ts**: Handles TOML/JSON parsing, file I/O, validation, and watching
+- **schemas.ts**: Arktype schemas for type-safe configuration validation
+
+### Handshake Layer
+- **index.ts**: Complete RTMP handshake implementation with C0/C1/C2/S0/S1/S2
+- Supports simulated and real handshake scenarios
+- Includes digest validation and shared secret generation
+
+### RTMP Protocol Layer
+- **connection.ts**: RTMP packet parsing, chunking, and message handling
+- Implements AMF0/AMF3 serialization for RTMP commands
+- Handles all standard RTMP message types
+
+### Main Server
+- **main.ts**: TCP server, REST API, stream forwarding logic
+- Manages connection lifecycle and event propagation
+
+## Performance
+
+- **Zero-overhead node_modules**: Uses Bun's native runtime
+- **Fast config parsing**: TOML parsing with native Bun APIs
+- **Efficient buffer handling**: Optimized Buffer operations throughout
+- **Async I/O**: Non-blocking server operations
+
+## Error Handling
+
+All modules include comprehensive error handling:
+
+- Configuration validation errors
+- Malformed TOML/JSON detection
+- Handshake protocol errors
+- Network timeout handling
+- Stream forwarding errors
+
+## TypeScript Support
+
+Full TypeScript support with strict typing throughout:
+
+```typescript
+import type {
+    RtmpConfig,
+    ServerConfig,
+    TargetConfig,
+    HandshakeResult,
+    HandshakeContext,
+    ConnectionState,
+    RtmpPacket,
+    RtmpMessage
+} from "./src/index";
+```
+
+## Dependencies
+
+- **arktype**: Runtime type validation and inference
+- **@iarna/toml**: TOML parsing and stringification
+- **@types/node**: Node.js type definitions
+- **bun-types**: Bun runtime type definitions
+
+## License
+
+MIT
+
+## Contributing
+
+Contributions are welcome! Please ensure all tests pass before submitting pull requests.
+
 ```bash
-bun run start
+# Run tests before committing
+bun test
 ```
 
-### Logs:
+## Troubleshooting
+
+### Port Already in Use
 ```bash
-bun run logs
+# Find and kill process using port 1935
+lsof -ti:1935 | xargs kill -9
 ```
 
-## 📡 Uso
+### Config Validation Errors
+- Ensure all required fields are present
+- Check port ranges (1024-65535)
+- Verify boolean values for `enabled` flags
 
-### 1. Publicar un stream
-
-Usa cualquier software de streaming (OBS, Streamlabs, etc.) con la siguiente configuración:
-- **URL RTMP**: `rtmp://localhost:1935/live`
-- **Clave de Stream**: Tu clave personalizada (ej: `mystream123`) ("not required")
-
-### 2. Configurar destinos via API
-
-#### Ver configuración actual:
-```bash
-curl http://localhost:3000/api/config
-```
-
-#### Habilitar un destino:
-```bash
-curl -X POST http://localhost:3000/api/targets/enable \
-  -H "Content-Type: application/json" \
-  -d '{
-    "targetId": "youtube",
-    "enabled": true,
-    "key": "TU_CLAVE_DE_YOUTUBE"
-  }'
-```
-
-#### Agregar nuevo destino:
-```bash
-curl -X POST http://localhost:3000/api/targets \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "facebook",
-    "url": "rtmps://live-api-s.facebook.com:443/rtmp",
-    "key": "TU_CLAVE_DE_FACEBOOK",
-    "enabled": false
-  }'
-```
-
-#### Ver estado del servidor:
-```bash
-curl http://localhost:3000/api/status
-```
-
-## 📚 Endpoints de la API
-
-### Configuración
-- `GET /api/config` - Obtener configuración completa
-- `PUT /api/config` - Actualizar configuración
-
-### Destinos
-- `GET /api/targets` - Listar todos los destinos
-- `POST /api/targets` - Agregar nuevo destino
-- `PUT /api/targets/:id` - Actualizar destino específico
-- `DELETE /api/targets/:id` - Eliminar destino
-- `POST /api/targets/enable` - Habilitar destino con clave
-- `POST /api/targets/disable` - Deshabilitar destino
-
-### Estado
-- `GET /api/status` - Estado del servidor y destinos activos
-- `GET /health` - Verificar salud del servidor
-
-## 🗂️ Estructura del Proyecto
-
-```
-rtmp_bun/
-├── src/
-│   ├── main.ts          # Punto de entrada principal
-│   ├── server.ts        # Implementación del servidor RTMP
-│   ├── config.ts        # Gestión de configuración
-│   ├── forwarder.ts     # Lógica de reenvío de streams
-│   └── api.ts          # API REST
-├── logs/               # Archivos de log
-├── config.json         # Archivo de configuración
-├── package.json        # Dependencias y scripts
-└── README.md          # Documentación
-```
-
-## 🔧 Scripts Disponibles
-
-- `bun run dev` - Ejecutar en modo desarrollo con --watch
-- `bun run start` - Ejecutar en modo producción
-- `bun run build` - Construir para distribución
-- `bun run test` - Ejecutar tests
-- `bun run logs` - Ver logs en tiempo real
-
-## 📝 Notas Importantes
-
-1. **Seguridad**: El servidor acepta conexiones desde cualquier IP. Considera configurar un firewall en producción.
-2. **Claves de Stream**: Nunca compartas tus claves de stream públicas. Guárdalas de forma segura.
-3. **Recursos**: El reenvío a múltiples destinos consume ancho de banda adicional.
-4. **Logs**: Los logs se guardan en `./logs/rtmp.log`
-
-## 🐛 Solución de Problemas
-
-### Stream no se publica:
-- Verifica que el puerto 1935 esté abierto
-- Revisa los logs para errores
-- Confirma la URL y clave de stream
-
-### No se reenvía a destinos:
-- Verifica que los destinos estén habilitados (`enabled: true`)
-- Confirma que las claves de stream sean correctas
-- Revisa conectividad de red
-
-### API no responde:
-- Verifica que el puerto 3000 esté disponible
-- Confirma que `enableRestApi` sea `true` en la configuración
-
-## 🤝 Contribuir
-
-1. Fork el proyecto
-2. Crea una rama para tu feature
-3. Commit tus cambios
-4. Push a la rama
-5. Abre un Pull Request
-
-## 📄 Licencia
-
-MIT License
-
-## 📁 Estructura del Proyecto
-
-```
-rtmp_bun/
-├── src/
-│   ├── main.ts          # Punto de entrada principal
-│   ├── server.ts        # Implementación completa del servidor RTMP
-│   ├── config.ts        # Gestión de configuración JSON
-│   ├── forwarder.ts     # Lógica de reenvío de streams
-│   └── api.ts          # API REST completa
-├── test/
-│   └── api-test.ts     # Tests automatizados de la API
-├── examples/
-│   └── usage.md        # Ejemplos de uso detallados
-├── logs/               # Archivos de log (creados automáticamente)
-├── dist/               # Build compilado
-├── config.json         # Configuración del servidor
-├── package.json        # Dependencias y scripts
-├── verify.ts          # Script de verificación
-├── QUICKSTART.md      # Guía rápida
-└── README.md          # Esta documentación
-```
-
-## 🚀 Scripts Disponibles
-
-| Comando | Descripción |
-|---------|-------------|
-| `bun run dev` | Iniciar servidor en modo desarrollo con --watch |
-| `bun run start` | Iniciar servidor en modo producción |
-| `bun run build` | Compilar para distribución |
-| `bun run test` | Ejecutar tests unitarios |
-| `bun run test:api` | Probar API REST |
-| `bun run verify` | Verificar instalación completa |
-| `bun run logs` | Ver logs en tiempo real |
-
-## 🎮 Flujo de Trabajo Recomendado
-
-1. **Iniciar servidor**: `bun run dev`
-2. **Configurar plataformas**: Usar API REST o editar `config.json`
-3. **Probar API**: `bun run test:api`
-4. **Configurar OBS**: `rtmp://localhost:1935/live`
-5. **Iniciar transmisión**: Desde OBS o cualquier software RTMP
-
-## 🛠️ Tecnologías Utilizadas
-
-- **Runtime**: Bun (JavaScript/TypeScript)
-- **Protocolo**: RTMP (Real-Time Messaging Protocol)
-- **API**: REST HTTP con JSON
-- **Logging**: Sistema de archivos local
-- **Streaming**: Reenvío nativo a plataformas RTMP
-
-## 🔗 Enlaces Útiles
-
-- [Documentación de Bun](https://bun.sh/docs)
-- [Protocolo RTMP](https://rtmp.veriskope.com/)
-- [OBS Studio](https://obsproject.com/)
+### Handshake Errors
+- Ensure proper RTMP client protocol support
+- Check network connectivity
+- Verify stream key validity
