@@ -35,8 +35,6 @@ export class RtmpConnection implements RtmpConnectionInterface {
   private buffer: Buffer = Buffer.alloc(0);
   private transactionId = 1;
   private currentStreamId = 0;
-  private streamId: number | null = null;
-  private handshakeBuffer: Buffer = Buffer.alloc(0);
   private stats: ConnectionStats;
 
   constructor(config?: Partial<ConnectionConfig>, handlers?: Partial<RtmpEventHandlers<RtmpConnection>>) {
@@ -542,7 +540,6 @@ export class RtmpConnection implements RtmpConnectionInterface {
   ): Promise<void> {
     this.currentStreamId = this.currentStreamId + 1;
     await this.sendCreateStreamResult(this.currentStreamId, transactionId);
-    this.streamId = this.currentStreamId;
   }
 
   private async handlePublish(
@@ -624,8 +621,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handleSeek(
-    transactionId: any,
-    commandObject: any,
+    transactionId: AmfDataType,
+    commandObject: AmfDataType,
     extraData: Buffer,
   ): Promise<void> {
     try {
@@ -637,8 +634,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handleReceiveVideo(
-    transactionId: any,
-    commandObject: any,
+    transactionId: AmfDataType,
+    commandObject: AmfDataType,
     extraData: Buffer,
   ): Promise<void> {
     try {
@@ -650,8 +647,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handleReceiveAudio(
-    transactionId: any,
-    commandObject: any,
+    transactionId: AmfDataType,
+    commandObject: AmfDataType,
     extraData: Buffer,
   ): Promise<void> {
     try {
@@ -782,7 +779,7 @@ export class RtmpConnection implements RtmpConnectionInterface {
    */
   private async sendCreateStreamResult(
     streamId: number,
-    transactionId: any,
+    transactionId: AmfDataType,
   ): Promise<void> {
     // Use AMF serialization for cleaner, more maintainable code
     const result = amf.serialize([
@@ -982,7 +979,6 @@ export class RtmpConnection implements RtmpConnectionInterface {
     }
 
     this.buffer = Buffer.alloc(0);
-    this.handshakeBuffer = Buffer.alloc(0);
   }
 
   private handleError(error: Error, context: string): void {

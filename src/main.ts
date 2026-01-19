@@ -15,6 +15,7 @@ export class RTMPServer {
   private connections: Map<string, RtmpConnection> = new Map();
   private isRunning: boolean = false;
   private config: RtmpConfig;
+  private readonly LOG_PREFIX = "[RTMPServer]";
   private restApiServer: Server | null = null;
 
   constructor(options: RTMPServerOptions = {}) {
@@ -34,18 +35,33 @@ export class RTMPServer {
 
     this.configLoader.onUpdate((newConfig) => {
       this.config = newConfig;
-      console.log("[RTMPServer] Configuration reloaded");
+      this.log("Configuration reloaded");
     });
 
     if (autoStart) {
-      this.start();
+      // Start the server asynchronously without blocking constructor
+      this.start().catch((error) => {
+        this.logError("Failed to auto-start:", error);
+      });
     }
   }
 
+  private log(message: string, ...args: unknown[]): void {
+    console.log(`${this.LOG_PREFIX} ${message}`, ...args);
+  }
+
+  private logError(message: string, ...args: unknown[]): void {
+    console.error(`${this.LOG_PREFIX} ${message}`, ...args);
+  }
+
+  private logWarn(message: string, ...args: unknown[]): void {
+    console.warn(`${this.LOG_PREFIX} ${message}`, ...args);
+  }
+
   public async loadConfig(): Promise<void> {
-    console.log("[RTMPServer] Loading configuration...");
+    this.log("Loading configuration...");
     this.config = await this.configLoader.load();
-    console.log("[RTMPServer] Configuration loaded:", {
+    this.log("Configuration loaded:", {
       port: this.config.server.port,
       host: this.config.server.host,
       targets: this.config.targets.length,
@@ -54,7 +70,7 @@ export class RTMPServer {
 
   public async start(): Promise<void> {
     if (this.isRunning) {
-      console.warn("[RTMPServer] Server is already running");
+      this.logWarn("Server is already running");
       return;
     }
 
@@ -72,14 +88,14 @@ export class RTMPServer {
       });
 
       this.server.on("error", (error) => {
-        console.error("[RTMPServer] Server error:", error);
+        this.logError("Server error:", error);
       });
 
       await new Promise<void>((resolve, reject) => {
         if (!this.server) return reject(new Error("Server not initialized"));
 
         this.server.listen(port, host, () => {
-          console.log(`[RTMPServer] RTMP server listening on ${host}:${port}`);
+          this.log(`RTMP server listening on ${host}:${port}`);
           this.isRunning = true;
           resolve();
         });
@@ -91,18 +107,18 @@ export class RTMPServer {
         await this.startRestApi();
       }
     } catch (error) {
-      console.error("[RTMPServer] Failed to start server:", error);
+      this.logError("Failed to start server:", error);
       throw error;
     }
   }
 
   public async stop(): Promise<void> {
     if (!this.isRunning) {
-      console.warn("[RTMPServer] Server is not running");
+      this.logWarn("Server is not running");
       return;
     }
 
-    console.log("[RTMPServer] Stopping server...");
+    this.log("Stopping server...");
 
     if (this.restApiServer) {
       await this.stopRestApi();
@@ -119,7 +135,7 @@ export class RTMPServer {
         this.server?.close(() => {
           this.server = null;
           this.isRunning = false;
-          console.log("[RTMPServer] Server stopped");
+          this.log("Server stopped");
           resolve();
         });
 
@@ -134,7 +150,7 @@ export class RTMPServer {
 
   private handleConnection(socket: Socket): void {
     const connectionId = `${socket.remoteAddress}:${socket.remotePort}`;
-    console.log(`[RTMPServer] New connection from ${connectionId}`);
+    this.log(`New connection from ${connectionId}`);
 
     // Map server config to connection config
     const connectionConfig = {
@@ -147,47 +163,38 @@ export class RTMPServer {
 
     const connection = new RtmpConnection(connectionConfig, {
       onConnect: (client) => {
-        console.log(`[RTMPServer] Client connected: ${connectionId}`);
+        this.log(`Client connected: ${connectionId}`);
       },
       onDisconnect: (client, reason) => {
-        console.log(
-          `[RTMPServer] Client disconnected: ${connectionId} (${reason})`,
-        );
+        this.log(`Client disconnected: ${connectionId} (${reason})`);
         this.connections.delete(connectionId);
       },
       onMessage: (message, client) => {
-        console.log(`[RTMPServer] Message from ${connectionId}`);
+        this.log(`Message from ${connectionId}`);
       },
       onHandshakeComplete: (result, client) => {
-        console.log(
-          `[RTMPServer] Handshake completed for ${connectionId}: ${result.success ? "OK" : "FAILED"}`,
-        );
+        this.log(`Handshake completed for ${connectionId}: ${result.success ? "OK" : "FAILED"}`);
       },
       onStreamPublishStart: (streamName, client) => {
-        console.log(`[RTMPServer] Stream publish started: ${streamName}`);
+        this.log(`Stream publish started: ${streamName}`);
         this.config.targets.forEach((target) => {
           if (target.enabled) {
-            console.log(
-              `[RTMPServer] Forwarding stream ${streamName} to ${target.url}`,
-            );
+            this.log(`Forwarding stream ${streamName} to ${target.url}`);
             this.forwardToTarget(streamName, target);
           }
         });
       },
       onStreamPublishStop: (streamName, client) => {
-        console.log(`[RTMPServer] Stream publish stopped: ${streamName}`);
+        this.log(`Stream publish stopped: ${streamName}`);
       },
       onStreamPlayStart: (streamName, client) => {
-        console.log(`[RTMPServer] Stream play started: ${streamName}`);
+        this.log(`Stream play started: ${streamName}`);
       },
       onStreamPlayStop: (streamName, client) => {
-        console.log(`[RTMPServer] Stream play stopped: ${streamName}`);
+        this.log(`Stream play stopped: ${streamName}`);
       },
       onError: (error, client) => {
-        console.error(
-          `[RTMPServer] Connection error for ${connectionId}:`,
-          error,
-        );
+        this.logError(`Connection error for ${connectionId}:`, error);
       },
     });
 
@@ -198,21 +205,18 @@ export class RTMPServer {
       try {
         await connection.handleData(Buffer.from(data));
       } catch (error) {
-        console.error(
-          `[RTMPServer] Error handling data from ${connectionId}:`,
-          error,
-        );
+        this.logError(`Error handling data from ${connectionId}:`, error);
         socket.destroy();
       }
     });
 
     socket.on("close", () => {
-      console.log(`[RTMPServer] Socket closed for ${connectionId}`);
+      this.log(`Socket closed for ${connectionId}`);
       this.connections.delete(connectionId);
     });
 
     socket.on("error", (error) => {
-      console.error(`[RTMPServer] Socket error for ${connectionId}:`, error);
+      this.logError(`Socket error for ${connectionId}:`, error);
       this.connections.delete(connectionId);
     });
 
@@ -223,52 +227,85 @@ export class RTMPServer {
   private async startRestApi(): Promise<void> {
     const { restApiPort, host } = this.config.server;
 
-    this.restApiServer = new Server(async (socket) => {
-      socket.on("data", (data) => {
-        const request = data.toString();
-        const lines = request.split("\r\n");
+    this.restApiServer = new Server((socket) => {
+      let requestData = "";
+
+      socket.on("data", async (data) => {
+        requestData += data.toString();
+
+        // Check if we have received the complete HTTP request
+        const headerEndIndex = requestData.indexOf("\r\n\r\n");
+        if (headerEndIndex === -1) {
+          return; // Wait for more data
+        }
+
+        const headers = requestData.substring(0, headerEndIndex);
+        const body = requestData.substring(headerEndIndex + 4);
+
+        const lines = headers.split("\r\n");
         const requestLine = lines[0];
         const [method, path] = requestLine.split(" ");
 
-        let response = "";
-        let body = "";
+        let responseBody = "";
         let statusLine = "HTTP/1.1 200 OK";
 
-        if (method === "GET" && (path === "/api" || path === "/api/")) {
-          body = JSON.stringify({
-            name: "RTMP Bun Server",
-            version: "1.0.0",
-            status: this.isRunning ? "running" : "stopped",
-            endpoints: ["/api", "/api/config", "/api/targets", "/api/status"],
-          });
-        } else if (method === "GET" && path === "/api/status") {
-          const status = {
-            running: this.isRunning,
-            connections: this.connections.size,
-            config: {
-              port: this.config.server.port,
-              targets: this.config.targets.length,
-            },
-            uptime: process.uptime,
-            memory: process.memoryUsage,
-          };
-          body = JSON.stringify(status);
-        } else if (method === "GET" && path === "/api/targets") {
-          body = JSON.stringify(this.config.targets);
-        } else if (method === "GET" && path === "/api/config") {
-          body = JSON.stringify(this.config);
-        } else {
-          statusLine = "HTTP/1.1 404 Not Found";
-          body = JSON.stringify({ error: "Not found" });
+        try {
+          if (method === "GET" && (path === "/api" || path === "/api/")) {
+            responseBody = JSON.stringify({
+              name: "RTMP Bun Server",
+              version: "1.0.0",
+              status: this.isRunning ? "running" : "stopped",
+              endpoints: ["/api", "/api/config", "/api/targets", "/api/status"],
+            });
+          } else if (method === "GET" && path === "/api/status") {
+            const status = {
+              running: this.isRunning,
+              connections: this.connections.size,
+              config: {
+                port: this.config.server.port,
+                targets: this.config.targets.length,
+              },
+              uptime: process.uptime(),
+              memory: process.memoryUsage(),
+            };
+            responseBody = JSON.stringify(status);
+          } else if (method === "GET" && path === "/api/targets") {
+            responseBody = JSON.stringify(this.config.targets);
+          } else if (method === "GET" && path === "/api/config") {
+            responseBody = JSON.stringify(this.config);
+          } else if (method === "POST" && path === "/api/targets") {
+            // Handle POST request to update targets
+            try {
+              const parsedBody = JSON.parse(body);
+              if (Array.isArray(parsedBody)) {
+                this.config.targets = parsedBody;
+                await this.configLoader.save(this.config);
+                responseBody = JSON.stringify({ success: true, message: "Targets updated" });
+              } else {
+                statusLine = "HTTP/1.1 400 Bad Request";
+                responseBody = JSON.stringify({ error: "Invalid request body" });
+              }
+            } catch (parseError) {
+              statusLine = "HTTP/1.1 400 Bad Request";
+              responseBody = JSON.stringify({ error: "Invalid JSON" });
+            }
+          } else {
+            statusLine = "HTTP/1.1 404 Not Found";
+            responseBody = JSON.stringify({ error: "Not found" });
+          }
+        } catch (error) {
+          statusLine = "HTTP/1.1 500 Internal Server Error";
+          responseBody = JSON.stringify({ error: "Internal server error" });
+          this.logError("REST API error:", error);
         }
 
-        response = `${statusLine}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+        const response = `${statusLine}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(responseBody)}\r\n\r\n${responseBody}`;
         socket.write(response);
         socket.end();
       });
 
       socket.on("error", (error) => {
-        console.error("[RTMPServer] REST API socket error:", error);
+        this.logError("REST API socket error:", error);
       });
     });
 
@@ -277,9 +314,7 @@ export class RTMPServer {
         return reject(new Error("REST API server not initialized"));
 
       this.restApiServer.listen(restApiPort, host, () => {
-        console.log(
-          `[RTMPServer] REST API listening on ${host}:${restApiPort}`,
-        );
+        this.log(`REST API listening on ${host}:${restApiPort}`);
         resolve();
       });
 
@@ -292,7 +327,7 @@ export class RTMPServer {
       await new Promise<void>((resolve) => {
         this.restApiServer?.close(() => {
           this.restApiServer = null;
-          console.log("[RTMPServer] REST API stopped");
+          this.log("REST API stopped");
           resolve();
         });
       });
@@ -300,10 +335,13 @@ export class RTMPServer {
   }
 
   private forwardToTarget(streamName: string, target: TargetConfig): void {
-    console.log(
-      `[RTMPServer] Simulating forwarding ${streamName} to ${target.url}`,
-    );
+    this.log(`Simulating forwarding ${streamName} to ${target.url}`);
     // In real implementation, this would initiate RTMP or HTTP push
+    // For now, this is a stub that logs the forwarding attempt
+    // Actual implementation would require:
+    // 1. Creating an RTMP client connection to the target
+    // 2. Re-streaming the media data
+    // 3. Handling connection errors and retries
   }
 
   public getStats(): {
@@ -321,13 +359,21 @@ export class RTMPServer {
   public async updateTargets(newTargets: TargetConfig[]): Promise<void> {
     this.config.targets = newTargets;
     await this.configLoader.save(this.config);
-    console.log("[RTMPServer] Targets updated");
+    this.log("Targets updated");
   }
 }
 
 // Main entry point
 async function main() {
-  console.log("[RTMPServer] Starting RTMP Bun Server...");
+  const LOG_PREFIX = "[RTMPServer]";
+  const log = (message: string, ...args: unknown[]): void => {
+    console.log(`${LOG_PREFIX} ${message}`, ...args);
+  };
+  const logError = (message: string, ...args: unknown[]): void => {
+    console.error(`${LOG_PREFIX} ${message}`, ...args);
+  };
+
+  log("Starting RTMP Bun Server...");
 
   const server = new RTMPServer({
     configPath: "./config.toml",
@@ -341,7 +387,7 @@ async function main() {
 
     // Graceful shutdown
     const shutdown = async () => {
-      console.log("[RTMPServer] Received shutdown signal");
+      log("Received shutdown signal");
       await server.stop();
       process.exit(0);
     };
@@ -352,7 +398,7 @@ async function main() {
     // Keep process alive
     await new Promise(() => {}); // Infinite promise to prevent exit
   } catch (error) {
-    console.error("[RTMPServer] Failed to start:", error);
+    logError("Failed to start:", error);
     process.exit(1);
   }
 }
