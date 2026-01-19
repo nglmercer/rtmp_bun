@@ -4,7 +4,7 @@
 
 [server]
 # Server networking
-port = 1935
+port = 1945
 host = "0.0.0.0"
 
 # RTMP protocol settings

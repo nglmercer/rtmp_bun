@@ -15,22 +15,22 @@ export enum ChunkType {
   ABSOLUTE = 3,
 }
 
-// Message type constants
+// Message type constants (RTMP specification RFC 7016)
 export enum MessageType {
-  SET_CHUNK_SIZE = 1,
-  ABORT = 2,
-  ACKNOWLEDGEMENT = 3,
-  USER_CONTROL = 4,
-  WINDOW_ACKNOWLEDGEMENT_SIZE = 5,
-  SET_PEER_BANDWIDTH = 6,
+  SET_CHUNK_SIZE = 0,
+  ABORT = 1,
+  ACKNOWLEDGEMENT = 2,
+  USER_CONTROL = 3,
+  WINDOW_ACKNOWLEDGEMENT_SIZE = 4,
+  SET_PEER_BANDWIDTH = 5,
   AUDIO = 8,
   VIDEO = 9,
-  COMMAND_AMF0 = 20,
   COMMAND_AMF3 = 17,
-  DATA_AMF0 = 18,
   DATA_AMF3 = 15,
-  SHARED_OBJECT_AMF0 = 19,
   SHARED_OBJECT_AMF3 = 16,
+  DATA_AMF0 = 18,
+  SHARED_OBJECT_AMF0 = 19,
+  COMMAND_AMF0 = 20,
   AGGREGATE = 22,
 }
 
