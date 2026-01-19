@@ -106,8 +106,10 @@ export class ConfigLoader {
 
       const result = rtmpConfigSchema(rawData);
 
-      if (typeof result === "object" && "problems" in result) {
-        const problems = (result as any).problems;
+      // Check if result is a validation error with problems
+      if (typeof result === "object" && result !== null && "problems" in result) {
+        const validationError = result as { problems: unknown };
+        const problems = validationError.problems;
         if (Array.isArray(problems)) {
           throw new Error(
             `Configuration validation failed:\n${problems.map((p: unknown) => `  - ${p}`).join("\n")}`,

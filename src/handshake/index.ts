@@ -1,5 +1,3 @@
-import { type as arktype } from "arktype";
-
 // RTMP Handshake constants and types
 export const RTMP_VERSION = 0x03;
 export const RTMP_CLIENT_DIGEST_OFFSET = 1536;
@@ -38,11 +36,13 @@ export interface HandshakeResult {
   handshakeBytes?: number;
 }
 
-// Key generation for simplified RTMP handshake
-export function generateSharedSecret(): {
+export interface SharedSecret {
   privateKey: Buffer;
   publicKey: Buffer;
-} {
+}
+
+// Key generation for simplified RTMP handshake
+export function generateSharedSecret(): SharedSecret {
   // Simplified shared secret generation for testing
   // In production, this should use proper Diffie-Hellman or the specific RTMP key exchange
   const privateKey = Buffer.alloc(32);
@@ -169,7 +169,7 @@ export class RtmpHandshake {
 
   // Process server response (S0 + S1 + S2)
   processServerResponse(data: Buffer): HandshakeResult {
-    if (!data || data.length < RTMP_HANDSHAKE_SIZE) {
+    if (!isBuffer(data) || data.length < RTMP_HANDSHAKE_SIZE) {
       return {
         success: false,
         error: "Invalid server response length",
@@ -184,12 +184,20 @@ export class RtmpHandshake {
       };
     }
 
-    // Extract S1 and S2
+    // Extract S1 and S2 with proper bounds checking
     const s1 = data.subarray(1, RTMP_HANDSHAKE_SIZE + 1);
     const s2 = data.subarray(
       RTMP_HANDSHAKE_SIZE + 1,
       RTMP_HANDSHAKE_SIZE * 2 + 1,
     );
+
+    // Validate that we have complete S1 and S2 packets
+    if (s1.length !== RTMP_HANDSHAKE_SIZE || s2.length !== RTMP_HANDSHAKE_SIZE) {
+      return {
+        success: false,
+        error: "Invalid S1 or S2 packet length",
+      };
+    }
 
     console.log("[RTMP Handshake] Received S0, S1, and S2 from server");
 
@@ -213,7 +221,7 @@ export class RtmpHandshake {
 
     return {
       success: true,
-      context: this.context,
+      context: { ...this.context },
       handshakeBytes: data.length,
     };
   }
@@ -227,7 +235,7 @@ export class RtmpHandshake {
       // Combine C0 + C1
       const combined = Buffer.concat([c0, c1]);
 
-      if (serverS1 && this.state !== "completed") {
+      if (serverS1 && !isHandshakeStateCompleted(this.state)) {
         // We have server's S1, so generate C2
         // generateC2 sets state to "completed"
         const c2 = this.generateC2(serverS1);
@@ -425,20 +433,20 @@ export async function performHandshakeSimulation(
 export const isHandshakeResult = (obj: unknown): obj is HandshakeResult => {
   if (typeof obj !== "object" || obj === null) return false;
 
-  const result = obj as any;
+  const result = obj as Record<string, unknown>;
 
   return (
     typeof result.success === "boolean" &&
     (result.error === undefined || typeof result.error === "string") &&
-    (result.handshakeBytes === undefined ||
-      typeof result.handshakeBytes === "number")
+    (result.context === undefined || isHandshakeContext(result.context)) &&
+    (result.handshakeBytes === undefined || typeof result.handshakeBytes === "number")
   );
 };
 
 export const isHandshakeContext = (obj: unknown): obj is HandshakeContext => {
   if (typeof obj !== "object" || obj === null) return false;
 
-  const ctx = obj as any;
+  const ctx = obj as Record<string, unknown>;
   const validStates: HandshakeState[] = [
     "idle",
     "c0_received",
@@ -457,6 +465,26 @@ export const isHandshakeContext = (obj: unknown): obj is HandshakeContext => {
     (ctx.privateKey === undefined || Buffer.isBuffer(ctx.privateKey)) &&
     (ctx.publicKey === undefined || Buffer.isBuffer(ctx.publicKey))
   );
+};
+
+// Additional type guards for better type safety
+export const isBuffer = (obj: unknown): obj is Buffer => {
+  return Buffer.isBuffer(obj);
+};
+
+export const isValidHandshakeState = (state: unknown): state is HandshakeState => {
+  const validStates: HandshakeState[] = [
+    "idle",
+    "c0_received",
+    "c1_received",
+    "c2_received",
+    "completed",
+  ];
+  return typeof state === "string" && validStates.includes(state as HandshakeState);
+};
+
+export const isHandshakeStateCompleted = (state: HandshakeState): boolean => {
+  return state === "completed";
 };
 
 // Default export for convenience

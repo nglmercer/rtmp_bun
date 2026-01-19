@@ -10,16 +10,27 @@ export const targetConfigSchema = type({
 });
 
 // Server configuration schema - settings for the RTMP server
+// Fixed: ArkType 2.x uses 'number' type with narrows for integer constraints
 export const serverConfigSchema = type({
-  port: ["integer >= 1024 & <= 65535", "number"],
+  port: type.number.narrow(
+    (n) => Number.isInteger(n) && n >= 1024 && n <= 65535,
+  ),
   host: "string",
-  chunkSize: ["integer >= 128 & <= 65535", "number"],
-  windowAckSize: ["integer >= 1 & <= 4294967295", "number"],
-  peerBandwidth: ["integer >= 1 & <= 4294967295", "number"],
+  chunkSize: type.number.narrow(
+    (n) => Number.isInteger(n) && n >= 128 && n <= 65535,
+  ),
+  windowAckSize: type.number.narrow(
+    (n) => Number.isInteger(n) && n >= 1 && n <= 4294967295,
+  ),
+  peerBandwidth: type.number.narrow(
+    (n) => Number.isInteger(n) && n >= 1 && n <= 4294967295,
+  ),
   logLevel: "string",
   logFile: "string",
   enableRestApi: "boolean",
-  restApiPort: ["string", "number"],
+  restApiPort: type.number.narrow(
+    (n) => Number.isInteger(n) && n >= 1 && n <= 65535,
+  ),
 });
 
 // Full RTMP server configuration schema
