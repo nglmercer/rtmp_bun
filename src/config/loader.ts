@@ -69,19 +69,21 @@ export class ConfigLoader {
     }
   }
 
-  private async parseJson(content: string): Promise<unknown> {
+  private async parseJson(content: string): Promise<RtmpConfig> {
     try {
-      return JSON.parse(content);
+      const parsed = JSON.parse(content);
+      return parsed as RtmpConfig;
     } catch (error) {
-      throw new Error(`Invalid JSON in configuration file: ${error}`);
+      throw new Error(`Invalid JSON in configuration file: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  private async parseToml(content: string): Promise<unknown> {
+  private async parseToml(content: string): Promise<RtmpConfig> {
     try {
-      return TOML.parse(content);
+      const parsed = TOML.parse(content);
+      return parsed as RtmpConfig;
     } catch (error) {
-      throw new Error(`Invalid TOML in configuration file: ${error}`);
+      throw new Error(`Invalid TOML in configuration file: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -97,9 +99,7 @@ export class ConfigLoader {
   public async load(): Promise<RtmpConfig> {
     try {
       const content = await fs.promises.readFile(this.configPath, "utf-8");
-      let rawData: unknown;
-
-      rawData =
+      const rawData: RtmpConfig =
         this.format === "json"
           ? await this.parseJson(content)
           : await this.parseToml(content);
@@ -108,11 +108,11 @@ export class ConfigLoader {
 
       // Check if result is a validation error with problems
       if (typeof result === "object" && result !== null && "problems" in result) {
-        const validationError = result as { problems: unknown };
+        const validationError = result as { problems: string[] };
         const problems = validationError.problems;
         if (Array.isArray(problems)) {
           throw new Error(
-            `Configuration validation failed:\n${problems.map((p: unknown) => `  - ${p}`).join("\n")}`,
+            `Configuration validation failed:\n${problems.map((p: string) => `  - ${p}`).join("\n")}`,
           );
         }
       }
@@ -120,7 +120,8 @@ export class ConfigLoader {
       this.config = result as RtmpConfig;
       return this.config;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (nodeError.code === "ENOENT") {
         console.warn(
           `Configuration file not found: ${this.configPath}. Using default configuration.`,
         );
@@ -141,12 +142,12 @@ export class ConfigLoader {
       if (this.format === "json") {
         content = JSON.stringify(configToSave, null, 2);
       } else {
-        content = TOML.stringify(configToSave as any);
+        content = TOML.stringify(configToSave);
       }
 
       await fs.promises.writeFile(this.configPath, content, "utf-8");
     } catch (error) {
-      throw new Error(`Failed to save configuration: ${error}`);
+      throw new Error(`Failed to save configuration: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

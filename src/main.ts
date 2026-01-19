@@ -1,7 +1,7 @@
 import { Server, Socket } from "node:net";
 import { ConfigLoader } from "./config/loader";
 import { RtmpConnection } from "./rtmp/connection";
-import { createDefaultConfig, type RtmpConfig } from "./config/schemas";
+import { createDefaultConfig, type RtmpConfig, type TargetConfig } from "./config/schemas";
 
 interface RTMPServerOptions {
   configPath?: string;
@@ -156,7 +156,7 @@ export class RTMPServer {
       },
       onStreamPublishStart: (streamName, client) => {
         console.log(`[RTMPServer] Stream publish started: ${streamName}`);
-        this.config.targets.forEach((target: any) => {
+        this.config.targets.forEach((target) => {
           if (target.enabled) {
             console.log(
               `[RTMPServer] Forwarding stream ${streamName} to ${target.url}`,
@@ -183,7 +183,7 @@ export class RTMPServer {
     });
 
     this.connections.set(connectionId, connection);
-    connection.setSocket(socket as any);
+    connection.setSocket(socket);
 
     socket.on("data", async (data) => {
       try {
@@ -290,7 +290,7 @@ export class RTMPServer {
     }
   }
 
-  private forwardToTarget(streamName: string, target: any): void {
+  private forwardToTarget(streamName: string, target: TargetConfig): void {
     console.log(
       `[RTMPServer] Simulating forwarding ${streamName} to ${target.url}`,
     );
@@ -300,7 +300,7 @@ export class RTMPServer {
   public getStats(): {
     running: boolean;
     connections: number;
-    config: any;
+    config: RtmpConfig;
   } {
     return {
       running: this.isRunning,
@@ -309,7 +309,7 @@ export class RTMPServer {
     };
   }
 
-  public async updateTargets(newTargets: any[]): Promise<void> {
+  public async updateTargets(newTargets: TargetConfig[]): Promise<void> {
     this.config.targets = newTargets;
     await this.configLoader.save(this.config);
     console.log("[RTMPServer] Targets updated");
