@@ -223,9 +223,9 @@ export class RtmpConnection implements RtmpConnectionInterface {
         this.socket?.write(handshakeResult);
         this.updateBytesSent(handshakeResult.length);
 
-        // Consume handshake bytes
+        // Consume handshake bytes (C0 + C1)
         this.buffer = this.buffer.subarray(
-          1 + RTMP_HANDSHAKE_SIZE * 2 + RTMP_HANDSHAKE_SIZE,
+          1 + RTMP_HANDSHAKE_SIZE,
         );
 
         this.state = ConnectionState.READY;
@@ -257,7 +257,9 @@ export class RtmpConnection implements RtmpConnectionInterface {
     while (this.buffer.length > 0) {
       // Parse chunk header
       const headerResult = this.parseChunkHeader(this.buffer);
-      if (!headerResult) break;
+      if (!headerResult) {
+        break;
+      }
 
       const { header, bytesConsumed } = headerResult;
 
@@ -338,14 +340,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
   }
 
   private async handleSetChunkSize(packet: RtmpPacket): Promise<void> {
-    this.log(`[RTMP Connection] SET_CHUNK_SIZE payload length: ${packet.payload.length}, messageLength: ${packet.header.messageLength}`);
-    
     if (packet.payload.length < 4) {
       // If payload is empty or too short, it might be a protocol issue
-      // Log the details for debugging
-      this.log(`[RTMP Connection] SET_CHUNK_SIZE payload too short: ${packet.payload.length} bytes`);
-      this.log(`[RTMP Connection] Payload content (hex): ${packet.payload.toString('hex')}`);
-      
       // For now, just log and continue instead of erroring
       // This allows the connection to proceed even with malformed SET_CHUNK_SIZE
       if (packet.payload.length === 0) {

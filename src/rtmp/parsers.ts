@@ -19,6 +19,12 @@ export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesCon
   const chunkStreamId = basicHeader & 0x3f;
   const chunkType = (basicHeader >> 6) & 0x03;
 
+  // Validate chunk type
+  if (!isValidChunkType(chunkType)) {
+    console.log(`[RTMP Parser] Invalid chunk type: ${chunkType}, basicHeader: ${basicHeader.toString(16)}`);
+    return null;
+  }
+
   let bytesConsumed = 1;
   let timestampDelta = 0;
   let messageLength = 0;
@@ -66,6 +72,26 @@ export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesCon
   }
 
   if (buffer.length < bytesConsumed) return null;
+
+  // Validate parsed values
+  if (messageLength > 0xFFFFFF) {
+    console.log(`[RTMP Parser] Invalid message length: ${messageLength}, basicHeader: ${basicHeader.toString(16)}`);
+    return null;
+  }
+
+  if (messageTypeId > 255) {
+    console.log(`[RTMP Parser] Invalid message type: ${messageTypeId}, basicHeader: ${basicHeader.toString(16)}`);
+    return null;
+  }
+
+  // Validate message type is a known RTMP message type
+  const validMessageTypes = [
+    0, 1, 2, 3, 4, 5, 6, 8, 9, 15, 16, 17, 18, 19, 20, 22
+  ];
+  if (!validMessageTypes.includes(messageTypeId)) {
+    console.log(`[RTMP Parser] Unknown message type: ${messageTypeId}, basicHeader: ${basicHeader.toString(16)}`);
+    return null;
+  }
 
   const header: RtmpHeader = {
     timestamp: timestamp || timestampDelta,
