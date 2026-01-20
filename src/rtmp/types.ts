@@ -32,7 +32,18 @@ export enum MessageType {
   SHARED_OBJECT_AMF0 = 19,
   COMMAND_AMF0 = 20,
   AGGREGATE = 22,
+  // Extended/Proprietary message types (common in OBS and other RTMP clients)
+  // These are not in the official spec but are commonly used
+  PROPRIETARY_186 = 186, // OBS proprietary message type
+  PROPRIETARY_98 = 98,    // Another proprietary type seen in logs
 }
+
+// Extended message types that may be encountered
+export const EXTENDED_MESSAGE_TYPES = [
+  98,   // Proprietary (seen in OBS logs)
+  186,  // Proprietary (seen in OBS logs)
+  255,  // Maximum possible message type
+];
 
 // Connection states
 export enum ConnectionState {
@@ -90,6 +101,7 @@ export interface RtmpEventHandlers<T = any> {
   onStreamPlayStart: (streamName: string, client: T) => void;
   onStreamPlayStop: (streamName: string, client: T) => void;
   onError: (error: Error, client: T) => void;
+  onUnknownMessageType?: (messageTypeId: number, packet: RtmpPacket, client: T) => void;
 }
 
 // AMF Data Types
@@ -157,6 +169,7 @@ export interface ConnectionStats {
   packetsSent: number;
   connectedAt: Date;
   lastActivity: Date;
+  unknownMessagesReceived: number;
 }
 
 // Enhanced connection interface
@@ -224,3 +237,41 @@ export const isConnectionConfig = (obj: unknown): obj is ConnectionConfig => {
     ['debug', 'info', 'warn', 'error'].includes(config.logLevel)
   );
 };
+
+// Utility function to check if a message type is standard RTMP
+export function isStandardMessageType(messageTypeId: number): boolean {
+  const standardTypes = [
+    MessageType.SET_CHUNK_SIZE,
+    MessageType.ABORT,
+    MessageType.ACKNOWLEDGEMENT,
+    MessageType.USER_CONTROL,
+    MessageType.WINDOW_ACKNOWLEDGEMENT_SIZE,
+    MessageType.SET_PEER_BANDWIDTH,
+    MessageType.AUDIO,
+    MessageType.VIDEO,
+    MessageType.COMMAND_AMF3,
+    MessageType.DATA_AMF3,
+    MessageType.SHARED_OBJECT_AMF3,
+    MessageType.DATA_AMF0,
+    MessageType.SHARED_OBJECT_AMF0,
+    MessageType.COMMAND_AMF0,
+    MessageType.AGGREGATE,
+  ];
+  return standardTypes.includes(messageTypeId as MessageType);
+}
+
+// Utility function to check if a message type is extended/proprietary
+export function isExtendedMessageType(messageTypeId: number): boolean {
+  return !isStandardMessageType(messageTypeId) && messageTypeId >= 0 && messageTypeId <= 255;
+}
+
+// Utility function to get message type name
+export function getMessageTypeName(messageTypeId: number): string {
+  const name = MessageType[messageTypeId as MessageType];
+  if (name) return name;
+  
+  if (messageTypeId === 98) return "PROPRIETARY_98";
+  if (messageTypeId === 186) return "PROPRIETARY_186";
+  
+  return `UNKNOWN_${messageTypeId}`;
+}

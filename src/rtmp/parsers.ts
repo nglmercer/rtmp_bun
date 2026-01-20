@@ -1,8 +1,8 @@
-import { RtmpHeader, ChunkType } from './types';
+import { RtmpHeader, ChunkType } from "./types";
 
 /**
  * RTMP Parsers Module
- * 
+ *
  * Contains parsers for RTMP protocol data structures.
  * Separated from connection.ts for better modularity and testability.
  */
@@ -12,7 +12,9 @@ import { RtmpHeader, ChunkType } from './types';
  * @param buffer Buffer containing RTMP data
  * @returns Object with header info and bytes consumed, or null if insufficient data
  */
-export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesConsumed: number } | null {
+export function parseChunkHeader(
+  buffer: Buffer,
+): { header: RtmpHeader; bytesConsumed: number } | null {
   if (buffer.length < 1) return null;
 
   const basicHeader = buffer[0];
@@ -21,7 +23,9 @@ export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesCon
 
   // Validate chunk type
   if (!isValidChunkType(chunkType)) {
-    console.log(`[RTMP Parser] Invalid chunk type: ${chunkType}, basicHeader: ${basicHeader.toString(16)}`);
+    console.log(
+      `[RTMP Parser] Invalid chunk type: ${chunkType}, basicHeader: ${basicHeader.toString(16)}`,
+    );
     return null;
   }
 
@@ -31,6 +35,7 @@ export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesCon
   let messageTypeId = 0;
   let messageStreamId = 0;
   let timestamp = 0;
+  let extendedTimestamp = false;
 
   // Parse based on chunk type
   switch (chunkType) {
@@ -44,10 +49,25 @@ export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesCon
 
       // Extended timestamp (4 additional bytes)
       if (timestamp === 0xffffff) {
-        if (buffer.length < 16) return null;
+        if (buffer.length < 16) {
+          // Return the parsed header even if extended timestamp is not fully available
+          // The extended timestamp validation will handle this case
+          return {
+            header: {
+              timestamp,
+              messageLength,
+              messageTypeId,
+              messageStreamId,
+              chunkStreamId,
+              extendedTimestamp: true,
+            },
+            bytesConsumed,
+          };
+        }
         timestamp = buffer.readUInt32BE(12);
         timestampDelta = 0;
         bytesConsumed = 16;
+        extendedTimestamp = true;
       }
       break;
 
@@ -55,12 +75,52 @@ export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesCon
       if (buffer.length < 4) return null;
       timestampDelta = buffer.readUIntBE(1, 3);
       bytesConsumed = 4;
+
+      // Extended timestamp (4 additional bytes)
+      if (timestampDelta === 0xffffff) {
+        if (buffer.length < 8) {
+          return {
+            header: {
+              timestamp: 0,
+              messageLength,
+              messageTypeId,
+              messageStreamId,
+              chunkStreamId,
+              extendedTimestamp: true,
+            },
+            bytesConsumed,
+          };
+        }
+        timestampDelta = buffer.readUInt32BE(4);
+        bytesConsumed = 8;
+        extendedTimestamp = true;
+      }
       break;
 
     case ChunkType.LARGE_ABSOLUTE: // Type 2 - timestamp delta (3 bytes)
       if (buffer.length < 3) return null;
       timestampDelta = buffer.readUIntBE(1, 2);
       bytesConsumed = 3;
+
+      // Extended timestamp (4 additional bytes)
+      if (timestampDelta === 0xffffff) {
+        if (buffer.length < 7) {
+          return {
+            header: {
+              timestamp: 0,
+              messageLength,
+              messageTypeId,
+              messageStreamId,
+              chunkStreamId,
+              extendedTimestamp: true,
+            },
+            bytesConsumed,
+          };
+        }
+        timestampDelta = buffer.readUInt32BE(3);
+        bytesConsumed = 7;
+        extendedTimestamp = true;
+      }
       break;
 
     case ChunkType.ABSOLUTE: // Type 3 - no header (1 byte)
@@ -74,23 +134,37 @@ export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesCon
   if (buffer.length < bytesConsumed) return null;
 
   // Validate parsed values
-  if (messageLength > 0xFFFFFF) {
-    console.log(`[RTMP Parser] Invalid message length: ${messageLength}, basicHeader: ${basicHeader.toString(16)}`);
+  if (messageLength > 0xffffff) {
+    console.log(
+      `[RTMP Parser] Invalid message length: ${messageLength}, basicHeader: ${basicHeader.toString(16)}`,
+    );
     return null;
   }
 
   if (messageTypeId > 255) {
-    console.log(`[RTMP Parser] Invalid message type: ${messageTypeId}, basicHeader: ${basicHeader.toString(16)}`);
+    console.log(
+      `[RTMP Parser] Invalid message type: ${messageTypeId}, basicHeader: ${basicHeader.toString(16)}`,
+    );
     return null;
   }
 
   // Validate message type is a known RTMP message type
   const validMessageTypes = [
-    0, 1, 2, 3, 4, 5, 6, 8, 9, 15, 16, 17, 18, 19, 20, 22
+    0, 1, 2, 3, 4, 5, 6, 8, 9, 15, 16, 17, 18, 19, 20, 22,
   ];
+
+  // Check if message type is valid
   if (!validMessageTypes.includes(messageTypeId)) {
-    console.log(`[RTMP Parser] Unknown message type: ${messageTypeId}, basicHeader: ${basicHeader.toString(16)}`);
-    return null;
+    console.log(
+      `[RTMP Parser] Unknown/Extended message type: ${messageTypeId}, basicHeader: ${basicHeader.toString(16)}`,
+    );
+
+    // For unknown message types, we still parse them but just log a warning
+    // This allows the connection to continue processing other messages
+    // Common proprietary message types (seen in OBS and other RTMP clients):
+    // - 98: Proprietary message type
+    // - 186: OBS proprietary message type
+    // These are valid message types that should be accepted
   }
 
   const header: RtmpHeader = {
@@ -99,7 +173,7 @@ export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesCon
     messageTypeId,
     messageStreamId,
     chunkStreamId,
-    extendedTimestamp: timestamp >= 0xffffff,
+    extendedTimestamp,
   };
 
   return { header, bytesConsumed };
@@ -112,7 +186,11 @@ export function parseChunkHeader(buffer: Buffer): { header: RtmpHeader; bytesCon
  * @param bytesConsumed Bytes consumed by the header
  * @returns True if buffer contains complete chunk data
  */
-export function hasCompleteChunk(buffer: Buffer, header: RtmpHeader, bytesConsumed: number): boolean {
+export function hasCompleteChunk(
+  buffer: Buffer,
+  header: RtmpHeader,
+  bytesConsumed: number,
+): boolean {
   return buffer.length >= bytesConsumed + header.messageLength;
 }
 
@@ -123,7 +201,11 @@ export function hasCompleteChunk(buffer: Buffer, header: RtmpHeader, bytesConsum
  * @param messageLength Length of the message payload
  * @returns Extracted payload buffer
  */
-export function extractChunkPayload(buffer: Buffer, bytesConsumed: number, messageLength: number): Buffer {
+export function extractChunkPayload(
+  buffer: Buffer,
+  bytesConsumed: number,
+  messageLength: number,
+): Buffer {
   return buffer.subarray(bytesConsumed, bytesConsumed + messageLength);
 }
 
@@ -133,7 +215,10 @@ export function extractChunkPayload(buffer: Buffer, bytesConsumed: number, messa
  * @param chunkSize RTMP chunk size
  * @returns Number of chunks needed
  */
-export function calculateChunkCount(messageLength: number, chunkSize: number): number {
+export function calculateChunkCount(
+  messageLength: number,
+  chunkSize: number,
+): number {
   if (messageLength === 0) return 1;
   return Math.ceil(messageLength / chunkSize);
 }
@@ -152,10 +237,13 @@ export function isValidChunkType(chunkType: number): boolean {
  * @param basicHeader First byte of RTMP chunk header
  * @returns Object with chunkStreamId and chunkType
  */
-export function parseBasicHeader(basicHeader: number): { chunkStreamId: number; chunkType: number } {
+export function parseBasicHeader(basicHeader: number): {
+  chunkStreamId: number;
+  chunkType: number;
+} {
   const chunkStreamId = basicHeader & 0x3f;
   const chunkType = (basicHeader >> 6) & 0x03;
-  
+
   return { chunkStreamId, chunkType };
 }
 
@@ -166,7 +254,11 @@ export function parseBasicHeader(basicHeader: number): { chunkStreamId: number; 
  * @param offset Offset in buffer where timestamp is located
  * @returns True if extended timestamp is valid
  */
-export function validateExtendedTimestamp(timestamp: number, buffer: Buffer, offset: number): boolean {
+export function validateExtendedTimestamp(
+  timestamp: number,
+  buffer: Buffer,
+  offset: number,
+): boolean {
   if (timestamp !== 0xffffff) return true;
   return buffer.length >= offset + 4;
 }

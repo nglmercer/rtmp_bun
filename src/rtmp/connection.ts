@@ -18,7 +18,9 @@ import {
   RtmpConnectionInterface,
   PartialConnectionConfig,
   RtmpCommandName,
-  RtmpStatusCode
+  RtmpStatusCode,
+  isStandardMessageType,
+  getMessageTypeName
 } from './types';
 import { type HandshakeResult } from "../handshake/index";
 import { AmfUtility, amf } from './amf';
@@ -98,7 +100,8 @@ export class RtmpConnection implements RtmpConnectionInterface {
       packetsReceived: 0,
       packetsSent: 0,
       connectedAt: new Date(),
-      lastActivity: new Date()
+      lastActivity: new Date(),
+      unknownMessagesReceived: 0
     };
   }
 
@@ -331,7 +334,35 @@ export class RtmpConnection implements RtmpConnectionInterface {
           await this.handleDataMessage(packet);
           break;
         default:
-          this.handleError(new Error(`Unknown message type: ${messageTypeId}`), 'processMessage');
+          // Handle unknown/extended message types
+          // Some RTMP clients may send proprietary or extended message types
+          // Common examples: 98, 186 (OBS proprietary messages)
+          this.stats.unknownMessagesReceived++;
+          
+          const messageTypeName = getMessageTypeName(messageTypeId);
+          const isStandard = isStandardMessageType(messageTypeId);
+          
+          if (isStandard) {
+            this.log(`[RTMP Connection] Standard message type not implemented: ${messageTypeId} (${messageTypeName}), ignoring`);
+          } else {
+            this.log(`[RTMP Connection] Extended/Proprietary message type: ${messageTypeId} (${messageTypeName}), ignoring`);
+          }
+          
+          // Update activity to prevent timeout
+          this.updateLastActivity();
+          // Also update bytes received to ensure proper tracking
+          this.updateBytesReceived(packet.payload.length);
+          // Increment packets received to maintain proper statistics
+          this.incrementPacketsReceived();
+          
+          // Call the optional onUnknownMessageType handler if provided
+          if (this.handlers.onUnknownMessageType) {
+            try {
+              this.handlers.onUnknownMessageType(messageTypeId, packet, this);
+            } catch (handlerError) {
+              this.log(`[RTMP Connection] Error in onUnknownMessageType handler: ${handlerError}`);
+            }
+          }
           break;
       }
     } catch (error) {

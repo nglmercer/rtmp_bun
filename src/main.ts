@@ -220,8 +220,14 @@ export class RTMPServer {
       this.connections.delete(connectionId);
     });
 
+    // Set socket timeout for idle connections
+    socket.setTimeout(30000, () => {
+      this.log(`Connection timeout for ${connectionId}`);
+      socket.destroy();
+      this.connections.delete(connectionId);
+    });
+
     socket.setKeepAlive(true, 60000);
-    socket.setTimeout(0);
   }
 
   private async startRestApi(): Promise<void> {

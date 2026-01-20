@@ -266,8 +266,9 @@ describe("RTMP Handshake Module", () => {
         const serverS1 = Buffer.alloc(RTMP_HANDSHAKE_SIZE);
         serverS1.writeUInt32BE(1234567890, 0);
         serverS1.writeUInt32BE(0, 4);
-        const digest = createDigest(serverS1.subarray(0, 1535));
-        digest.copy(serverS1, 1535);
+        const digestStart = 1504;
+        const digest = createDigest(serverS1.subarray(0, digestStart));
+        digest.copy(serverS1, digestStart);
 
         // This is simplified validation for testing
         const result = (clientHandshake as any)["validateDigest"](serverS1);
@@ -325,15 +326,16 @@ describe("RTMP Handshake Module", () => {
         const s1 = Buffer.alloc(RTMP_HANDSHAKE_SIZE);
         s1.writeUInt32BE(1234567890, 0);
         s1.writeUInt32BE(0, 4);
-        const digest = createDigest(s1.subarray(0, 1535));
-        digest.copy(s1, 1535);
+        const digestStart = 1504;
+        const digest = createDigest(s1.subarray(0, digestStart));
+        digest.copy(s1, digestStart);
 
         // S2: echo of S1 data starting at position 4
         const s2 = Buffer.alloc(RTMP_HANDSHAKE_SIZE);
-        const s2Data = s1.subarray(4, RTMP_HANDSHAKE_SIZE); // includes client digest
+        const s2Data = s1.subarray(4, digestStart); // includes data without digest
         s2Data.copy(s2, 4); // copy to offset 4, preserving zero timestamp at 0-3
-        const s2Digest = createDigest(s2.subarray(0, 1535));
-        s2Digest.copy(s2, 1535);
+        const s2Digest = createDigest(s2.subarray(0, digestStart));
+        s2Digest.copy(s2, digestStart);
 
         const serverResponse = Buffer.concat([s0, s1, s2]);
         clientHandshake.generateC0();
@@ -584,8 +586,9 @@ describe("RTMP Handshake Module", () => {
       const serverS1 = Buffer.alloc(RTMP_HANDSHAKE_SIZE);
       serverS1.writeUInt32BE(1234567890, 0);
       serverS1.writeUInt32BE(0, 4);
-      const digest = createDigest(serverS1.subarray(0, 1535));
-      digest.copy(serverS1, 1535);
+      const digestStart = 1504;
+      const digest = createDigest(serverS1.subarray(0, digestStart));
+      digest.copy(serverS1, digestStart);
 
       // Process in fragments
       handshake.generateC0();
@@ -596,10 +599,10 @@ describe("RTMP Handshake Module", () => {
 
       // Build S2 matching server response
       const s2 = Buffer.alloc(RTMP_HANDSHAKE_SIZE);
-      const s2Data = serverS1.subarray(4, RTMP_HANDSHAKE_SIZE);
+      const s2Data = serverS1.subarray(4, digestStart);
       s2Data.copy(s2, 4);
-      const s2Digest = createDigest(s2.subarray(0, 1535));
-      s2Digest.copy(s2, 1535);
+      const s2Digest = createDigest(s2.subarray(0, digestStart));
+      s2Digest.copy(s2, digestStart);
 
       const combined = Buffer.concat([s0, serverS1, s2]);
 

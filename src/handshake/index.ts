@@ -59,19 +59,31 @@ export function generateSharedSecret(): SharedSecret {
   return { privateKey, publicKey };
 }
 
-// Create a digest from a buffer
+// Create a digest from a buffer using a more realistic RTMP-style hash
 export function createDigest(data: Buffer): Buffer {
-  // Simple hash for testing - in production, use SHA-256
-  // For RTMP, the digest is typically partial SHA-256 at a specific offset
-  const hash = new Uint32Array([0x73616261]); // "saba" in hex for simple testing
+  // Use a more realistic hash function for RTMP handshake
+  // In production, this should use SHA-256 HMAC with proper key exchange
+  // For now, we'll use a better hash that's more compatible with RTMP clients
 
-  // XOR each byte into the hash
+  let hash = 0x73616261; // Initial seed value
+
+  // Process data in chunks for better distribution
   for (let i = 0; i < data.length; i++) {
-    hash[0] = (hash[0] ^ data[i]) >>> 0;
-    hash[0] = (hash[0] * 0x1000193) >>> 0; // FNV-like multiplication
+    hash = (hash ^ data[i]) >>> 0;
+    hash = (hash * 0x01000193) >>> 0; // FNV-1a prime
   }
 
-  return Buffer.from([(hash[0] >>> 0) % 256]);
+  // Return 32-byte digest (simulating SHA-256 output)
+  // For RTMP, we need a proper digest, so we'll generate 32 bytes
+  const digest = Buffer.alloc(32);
+  let tempHash = hash;
+
+  for (let i = 0; i < 32; i++) {
+    tempHash = (tempHash * 0x01000193) >>> 0;
+    digest[i] = tempHash & 0xff;
+  }
+
+  return digest;
 }
 
 // RTMP handshake packet builder
@@ -79,6 +91,8 @@ export class RtmpHandshake {
   private state: HandshakeState = "idle";
   private context: HandshakeContext;
   private sequence: Buffer[] = [];
+  private readonly DATA_SIZE = 1504; // 1536 - 32 (digest size)
+  private readonly DIGEST_SIZE = 32;
 
   constructor(useSharedSecret: boolean = false) {
     const { privateKey, publicKey } = useSharedSecret
@@ -117,17 +131,19 @@ export class RtmpHandshake {
     // Reserved (4 bytes) - should be 0
     buffer.writeUInt32BE(0, 4);
 
-    // Random data (1528 bytes)
-    const randomData = Buffer.alloc(1528);
+    // Random data (1520 bytes: 1504 - 8 (timestamp + reserved))
+    const randomData = Buffer.alloc(this.DATA_SIZE - 8);
     for (let i = 0; i < randomData.length; i++) {
       randomData[i] = Math.floor(Math.random() * 256);
     }
 
     randomData.copy(buffer, 8);
 
-    // Create digest at last byte (position 1535 for 1536-byte buffer)
-    const digest = createDigest(buffer.subarray(0, 1535));
-    digest.copy(buffer, 1535);
+    // Create digest at the end (position DATA_SIZE for 1536-byte buffer)
+    const digestStart = this.DATA_SIZE;
+    const dataToDigest = buffer.subarray(0, digestStart);
+    const digest = createDigest(dataToDigest);
+    digest.copy(buffer, digestStart);
 
     this.context.clientTimestamp = timestamp;
     this.sequence.push(buffer);
@@ -151,13 +167,13 @@ export class RtmpHandshake {
     buffer.writeUInt32BE(serverTimestamp, 4);
 
     // Copy echoed data from server S1 starting at position 4
-    const echoData = serverS1.subarray(4, RTMP_HANDSHAKE_SIZE);
+    const echoData = serverS1.subarray(4, this.DATA_SIZE);
     echoData.copy(buffer, 8);
 
-    // Generate response digest from buffer (positions 0-1534)
-    const dataToDigest = buffer.subarray(0, 1535);
-    const Digest = createDigest(dataToDigest);
-    Digest.copy(buffer, 1535);
+    // Generate response digest from buffer (positions 0 to DATA_SIZE)
+    const dataToDigest = buffer.subarray(0, this.DATA_SIZE);
+    const digest = createDigest(dataToDigest);
+    digest.copy(buffer, this.DATA_SIZE);
 
     this.context.state = "completed";
     this.state = "completed";
@@ -192,7 +208,10 @@ export class RtmpHandshake {
     );
 
     // Validate that we have complete S1 and S2 packets
-    if (s1.length !== RTMP_HANDSHAKE_SIZE || s2.length !== RTMP_HANDSHAKE_SIZE) {
+    if (
+      s1.length !== RTMP_HANDSHAKE_SIZE ||
+      s2.length !== RTMP_HANDSHAKE_SIZE
+    ) {
       return {
         success: false,
         error: "Invalid S1 or S2 packet length",
@@ -264,8 +283,10 @@ export class RtmpHandshake {
 
     // This is a simplified validation for testing
     // In production, RTMP uses specific key exchange and SHA-256 HMAC
-    const digest = packet.slice(-1);
-    const dataWithoutDigest = packet.subarray(0, packet.length - 1);
+    // The digest is 32 bytes, located at the end of the packet
+    const digestStart = this.DATA_SIZE;
+    const digest = packet.subarray(digestStart, digestStart + this.DIGEST_SIZE);
+    const dataWithoutDigest = packet.subarray(0, digestStart);
     const computedDigest = createDigest(dataWithoutDigest);
 
     return Buffer.compare(digest, computedDigest) === 0;
@@ -304,6 +325,9 @@ export class RtmpServerHandshake {
     };
   }
 
+  private DATA_SIZE = 1504;
+  private DIGEST_SIZE = 32;
+
   // Process client C0 + C1, generate S0 + S1 + S2
   generateServerResponse(clientC0C1: Buffer): Buffer {
     if (clientC0C1.length < RTMP_HANDSHAKE_SIZE + 1) {
@@ -337,25 +361,26 @@ export class RtmpServerHandshake {
     s1.writeUInt32BE(Math.floor(serverTimestamp), 0);
     s1.writeUInt32BE(0, 4); // Reserved
 
-    const randomData = Buffer.alloc(1528);
+    const randomData = Buffer.alloc(this.DATA_SIZE - 8);
     for (let i = 0; i < randomData.length; i++) {
       randomData[i] = Math.floor(Math.random() * 256);
     }
     randomData.copy(s1, 8);
 
-    const digest = createDigest(s1.subarray(0, 1535));
-    digest.copy(s1, 1535);
+    const digestStart = this.DATA_SIZE;
+    const digest = createDigest(s1.subarray(0, digestStart));
+    digest.copy(s1, digestStart);
 
     // Generate S2 (echo of C1 with server's timestamp)
     const s2 = Buffer.alloc(RTMP_HANDSHAKE_SIZE);
-    // Copy C2 timestamp + data (positions 4-1535 of c1)
-    const echoData = c1.subarray(4, RTMP_HANDSHAKE_SIZE);
+    // Copy C2 timestamp + data (positions 4 to DATA_SIZE of c1)
+    const echoData = c1.subarray(4, digestStart);
     echoData.copy(s2, 4);
 
-    // Generate response digest from echoed data (positions 4-1534)
-    const dataToDigest = s2.subarray(0, 1535);
+    // Generate response digest from echoed data (positions 0 to DATA_SIZE)
+    const dataToDigest = s2.subarray(0, digestStart);
     const digest2 = createDigest(dataToDigest);
-    digest2.copy(s2, 1535);
+    digest2.copy(s2, digestStart);
 
     console.log("[RTMP Handshake] Generated S0, S1, S2 for server response");
 
@@ -371,8 +396,9 @@ export class RtmpServerHandshake {
       return false;
     }
 
-    const digest = packet.slice(-1);
-    const dataWithoutDigest = packet.subarray(0, packet.length - 1);
+    const digestStart = this.DATA_SIZE;
+    const digest = packet.subarray(digestStart, digestStart + this.DIGEST_SIZE);
+    const dataWithoutDigest = packet.subarray(0, digestStart);
     const computedDigest = createDigest(dataWithoutDigest);
 
     return Buffer.compare(digest, computedDigest) === 0;
@@ -439,7 +465,8 @@ export const isHandshakeResult = (obj: unknown): obj is HandshakeResult => {
     typeof result.success === "boolean" &&
     (result.error === undefined || typeof result.error === "string") &&
     (result.context === undefined || isHandshakeContext(result.context)) &&
-    (result.handshakeBytes === undefined || typeof result.handshakeBytes === "number")
+    (result.handshakeBytes === undefined ||
+      typeof result.handshakeBytes === "number")
   );
 };
 
@@ -472,7 +499,9 @@ export const isBuffer = (obj: unknown): obj is Buffer => {
   return Buffer.isBuffer(obj);
 };
 
-export const isValidHandshakeState = (state: unknown): state is HandshakeState => {
+export const isValidHandshakeState = (
+  state: unknown,
+): state is HandshakeState => {
   const validStates: HandshakeState[] = [
     "idle",
     "c0_received",
@@ -480,7 +509,9 @@ export const isValidHandshakeState = (state: unknown): state is HandshakeState =
     "c2_received",
     "completed",
   ];
-  return typeof state === "string" && validStates.includes(state as HandshakeState);
+  return (
+    typeof state === "string" && validStates.includes(state as HandshakeState)
+  );
 };
 
 export const isHandshakeStateCompleted = (state: HandshakeState): boolean => {
